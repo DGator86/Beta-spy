@@ -63,8 +63,6 @@ The demo deliberately accelerates synthetic market minutes so the online forecas
 
 ## Live Tradier tape
 
-Tradier Brokerage market data provides consolidated real-time US equity data. Set the token, fetch the current SPY universe/weights, then run:
-
 ```bash
 export TRADIER_MARKET_ACCESS_TOKEN='...'
 beta-spy refresh-universe --output config/universe.csv
@@ -94,15 +92,36 @@ beta-spy backfill-flow \
 beta-spy replay --universe config/universe.csv
 ```
 
-`iex` is the default historical Alpaca feed because it is the easiest entry point. It is **not a consolidated full-market tape**. Use SIP historical data when your Alpaca plan provides it and you need the historical flow distribution to match Tradier's consolidated live feed more closely.
+`iex` is the default Alpaca historical feed. Use SIP historical data when your plan provides it and you need historical flow to resemble the consolidated live feed more closely.
+
+## Historical fetch + causal backtest
+
+Beta-spy can bootstrap a recent full-universe intraday corpus directly from Tradier. The `nightly` command refreshes current SPY holdings, downloads recent Time & Sales bars for every constituent plus SPY, replays the production indicator/breadth/forecast pipeline in timestamp order, and writes Markdown and JSON metrics.
+
+```bash
+export TRADIER_MARKET_ACCESS_TOKEN='...'
+beta-spy nightly --days 20 --interval 1min --output reports/backtest-latest
+```
+
+The report separates all forecasts from **model-ready** forecasts after the online learner has accumulated matured labels. It reports 5m/15m/30m direction accuracy, Brier score, expected-return MAE, decision-layer direction accuracy, and the most common `NO_TRADE` gates.
+
+If Alpaca credentials are available, Beta-spy can optionally add historical trade/quote-derived minute flow:
+
+```bash
+export APCA_API_KEY_ID='...'
+export APCA_API_SECRET_KEY='...'
+beta-spy nightly --provider alpaca --feed iex --with-flow --days 5
+```
+
+A bars-only Tradier backtest validates the 500-stock indicator/breadth engine. Historical order-flow validation requires historical trades+quotes or Beta-spy's own captured tape. The report states which mode was actually tested.
 
 ## Backtest limitation that matters
 
-A long backtest requires **point-in-time S&P 500 membership and weights**. Replaying 2020 with today's constituents introduces survivorship bias. Beta-spy therefore stores the universe used for each research run going forward; historical membership should be supplied separately for older periods.
+A long backtest requires **point-in-time S&P 500 membership and weights**. Replaying old periods with today's constituents introduces survivorship bias. Beta-spy stores the universe used for each research run going forward; historical membership should be supplied separately for older periods.
 
 ## Safety
 
-Beta-spy does not submit orders. The current options component returns a proposed, pessimistically-priced, defined-risk debit spread. Broker execution should remain a separate explicitly-enabled layer after the forecast and paper-validation evidence justify it.
+Beta-spy does not submit orders. The options component returns a proposed, pessimistically-priced, defined-risk debit spread. Broker execution remains outside this package.
 
 ## Tests
 
@@ -110,4 +129,4 @@ Beta-spy does not submit orders. The current options component returns a propose
 pytest
 ```
 
-See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the factor definitions and replay contract.
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for factor definitions and the replay contract.

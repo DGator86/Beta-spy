@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Beta-spy backtest after the US session
+
+[Timer]
+# 20:15 UTC is 16:15 EDT; Persistent catches a missed run after reboot.
+OnCalendar=Mon..Fri *-*-* 20:15:00 UTC
+Persistent=true
+RandomizedDelaySec=120
+
+[Install]
+WantedBy=timers.target

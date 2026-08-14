@@ -1,0 +1,214 @@
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from math import sqrt
+
+from .models import MarketFactors, SectorFactors, SymbolFeatures
+
+
+def _clip(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
+    return max(lower, min(upper, value))
+
+
+def _mean(values: list[float]) -> float | None:
+    return sum(values) / len(values) if values else None
+
+
+def _weighted(values: list[tuple[float, float]]) -> float | None:
+    denominator = sum(weight for _, weight in values if weight > 0)
+    if denominator <= 0:
+        return None
+    return sum(value * weight for value, weight in values if weight > 0) / denominator
+
+
+def _fraction(values: list[bool | None]) -> float | None:
+    known = [value for value in values if value is not None]
+    if not known:
+        return None
+    return sum(bool(value) for value in known) / len(known)
+
+
+def _trend_score(feature: SymbolFeatures) -> float | None:
+    signals: list[float] = []
+    if feature.vwap_distance_bps is not None:
+        signals.append(_clip(feature.vwap_distance_bps / 15.0))
+    if feature.ema8 is not None and feature.ema21 is not None and feature.close > 0:
+        signals.append(_clip((feature.ema8 / feature.ema21 - 1.0) * 10_000.0 / 10.0))
+    if feature.ema8_slope_bps is not None:
+        signals.append(_clip(feature.ema8_slope_bps / 2.0))
+    if feature.return_5m is not None:
+        signals.append(_clip(feature.return_5m * 10_000.0 / 15.0))
+    return _mean(signals)
+
+
+def _momentum_score(feature: SymbolFeatures) -> float | None:
+    signals: list[float] = []
+    if feature.return_1m is not None:
+        signals.append(_clip(feature.return_1m * 10_000.0 / 8.0))
+    if feature.return_5m is not None:
+        signals.append(_clip(feature.return_5m * 10_000.0 / 20.0))
+    if feature.return_15m is not None:
+        signals.append(_clip(feature.return_15m * 10_000.0 / 35.0))
+    if feature.rsi14 is not None:
+        signals.append(_clip((feature.rsi14 - 50.0) / 20.0))
+    return _mean(signals)
+
+
+def _volume_score(feature: SymbolFeatures) -> float | None:
+    signals: list[float] = []
+    if feature.relative_volume20 is not None:
+        direction = 1.0 if (feature.return_1m or 0.0) >= 0 else -1.0
+        signals.append(direction * _clip((feature.relative_volume20 - 1.0) / 1.5))
+    if feature.range_expansion is not None:
+        direction = 1.0 if (feature.return_1m or 0.0) >= 0 else -1.0
+        signals.append(direction * _clip((feature.range_expansion - 1.0) / 1.5))
+    return _mean(signals)
+
+
+def _flow_score(feature: SymbolFeatures) -> float | None:
+    signals: list[float] = []
+    if feature.flow.order_flow_imbalance is not None:
+        signals.append(_clip(feature.flow.order_flow_imbalance))
+    if feature.flow.quote_imbalance is not None:
+        signals.append(_clip(feature.flow.quote_imbalance))
+    if feature.flow.price_impact_bps_per_10k is not None:
+        signals.append(_clip(feature.flow.price_impact_bps_per_10k / 3.0))
+    if feature.flow.absorption is not None and feature.flow.order_flow_imbalance is not None:
+        signals.append(-feature.flow.absorption * (1.0 if feature.flow.order_flow_imbalance >= 0 else -1.0))
+    return _mean(signals)
+
+
+def _volatility_score(feature: SymbolFeatures) -> float | None:
+    signals: list[float] = []
+    if feature.range_expansion is not None:
+        signals.append(_clip((feature.range_expansion - 1.0) / 1.5))
+    if feature.atr14_bps is not None and feature.realized_vol20_bps is not None:
+        denominator = max(feature.realized_vol20_bps, 1e-9)
+        signals.append(_clip(feature.atr14_bps / denominator - 1.0))
+    return _mean(signals)
+
+
+@dataclass
+class BreadthAggregator:
+    previous_trend_ew: float | None = None
+
+    def aggregate(
+        self,
+        features: list[SymbolFeatures],
+        *,
+        timestamp: datetime,
+        expected_symbol_count: int,
+    ) -> MarketFactors:
+        constituents = [item for item in features if item.symbol != "SPY"]
+        spy = next((item for item in features if item.symbol == "SPY"), None)
+        covered_weight = sum(max(item.weight, 0.0) for item in constituents)
+        total_count = len(constituents)
+        coverage = total_count / expected_symbol_count if expected_symbol_count > 0 else 0.0
+
+        trend_pairs: list[tuple[float, float]] = []
+        momentum_pairs: list[tuple[float, float]] = []
+        volume_pairs: list[tuple[float, float]] = []
+        flow_pairs: list[tuple[float, float]] = []
+        vol_pairs: list[tuple[float, float]] = []
+        trend_values: list[float] = []
+        momentum_values: list[float] = []
+        volume_values: list[float] = []
+        flow_values: list[float] = []
+        vol_values: list[float] = []
+        sector_map: dict[str, list[SymbolFeatures]] = defaultdict(list)
+        for item in constituents:
+            sector_map[item.sector].append(item)
+            for score, target, pairs in [
+                (_trend_score(item), trend_values, trend_pairs),
+                (_momentum_score(item), momentum_values, momentum_pairs),
+                (_volume_score(item), volume_values, volume_pairs),
+                (_flow_score(item), flow_values, flow_pairs),
+                (_volatility_score(item), vol_values, vol_pairs),
+            ]:
+                if score is not None:
+                    target.append(score)
+                    pairs.append((score, item.weight))
+
+        pct_above = _fraction([item.above_vwap for item in constituents])
+        pct_ema = _fraction([item.ema_bullish for item in constituents])
+        pct_pos5 = _fraction([None if item.return_5m is None else item.return_5m > 0 for item in constituents])
+        pct_buy = _fraction(
+            [
+                None if item.flow.order_flow_imbalance is None else item.flow.order_flow_imbalance > 0
+                for item in constituents
+            ]
+        )
+        participation_parts = [value for value in (pct_above, pct_ema, pct_pos5, pct_buy) if value is not None]
+        participation = _mean([2.0 * value - 1.0 for value in participation_parts])
+
+        contributions = [abs((item.return_1m or 0.0) * item.weight) for item in constituents]
+        contribution_total = sum(contributions)
+        concentration = None
+        if contribution_total > 0:
+            shares = [value / contribution_total for value in contributions]
+            hhi = sum(share * share for share in shares)
+            baseline = 1.0 / max(len(shares), 1)
+            concentration = _clip((sqrt(hhi) - sqrt(baseline)) / max(1.0 - sqrt(baseline), 1e-9), 0.0, 1.0)
+
+        trend_ew = _mean(trend_values)
+        breadth_acceleration = None
+        if trend_ew is not None and self.previous_trend_ew is not None:
+            breadth_acceleration = trend_ew - self.previous_trend_ew
+        if trend_ew is not None:
+            self.previous_trend_ew = trend_ew
+
+        sectors: list[SectorFactors] = []
+        for sector, items in sorted(sector_map.items()):
+            sectors.append(
+                SectorFactors(
+                    sector=sector,
+                    count=len(items),
+                    covered_weight=sum(max(item.weight, 0.0) for item in items),
+                    trend=_mean([score for item in items if (score := _trend_score(item)) is not None]),
+                    momentum=_mean([score for item in items if (score := _momentum_score(item)) is not None]),
+                    volume=_mean([score for item in items if (score := _volume_score(item)) is not None]),
+                    flow=_mean([score for item in items if (score := _flow_score(item)) is not None]),
+                    volatility=_mean([score for item in items if (score := _volatility_score(item)) is not None]),
+                    participation=_mean(
+                        [
+                            1.0 if (item.return_5m or 0.0) > 0 else -1.0
+                            for item in items
+                            if item.return_5m is not None
+                        ]
+                    ),
+                )
+            )
+
+        return MarketFactors(
+            timestamp=timestamp,
+            symbol_count=total_count,
+            expected_symbol_count=expected_symbol_count,
+            coverage_ratio=coverage,
+            covered_weight=covered_weight,
+            trend_ew=trend_ew,
+            trend_weighted=_weighted(trend_pairs),
+            momentum_ew=_mean(momentum_values),
+            momentum_weighted=_weighted(momentum_pairs),
+            volume_ew=_mean(volume_values),
+            volume_weighted=_weighted(volume_pairs),
+            flow_ew=_mean(flow_values),
+            flow_weighted=_weighted(flow_pairs),
+            volatility_ew=_mean(vol_values),
+            volatility_weighted=_weighted(vol_pairs),
+            pct_above_vwap=pct_above,
+            pct_ema_bullish=pct_ema,
+            pct_positive_5m=pct_pos5,
+            pct_buy_flow=pct_buy,
+            participation=participation,
+            concentration=concentration,
+            breadth_acceleration=breadth_acceleration,
+            spy_return_1m=spy.return_1m if spy else None,
+            spy_return_5m=spy.return_5m if spy else None,
+            spy_vwap_distance_bps=spy.vwap_distance_bps if spy else None,
+            spy_flow=spy.flow.order_flow_imbalance if spy else None,
+            spy_quote_imbalance=spy.flow.quote_imbalance if spy else None,
+            spy_spread_bps=spy.flow.average_spread_bps if spy else None,
+            sectors=tuple(sectors),
+        )

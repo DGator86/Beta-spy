@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Beta-spy · 500 Tape</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand"><div class="mark">β</div><div><b>Beta-spy</b><span>500 TAPE</span></div></div>
+      <nav>
+        <button class="nav active">Command Center</button>
+        <button class="nav">Market Internals</button>
+        <button class="nav">Forecasts</button>
+        <button class="nav">Order Flow</button>
+        <button class="nav">Replay Lab</button>
+      </nav>
+      <div class="side-foot">
+        <div class="status-line"><i id="statusDot"></i><span id="statusText">CONNECTING</span></div>
+        <small>ordinary-data constituent intelligence</small>
+      </div>
+    </aside>
+
+    <main>
+      <header>
+        <div>
+          <div class="eyebrow">SPY CONSTITUENT SENSOR NETWORK</div>
+          <h1>Command Center</h1>
+        </div>
+        <div class="header-right">
+          <div class="clock" id="clock">—</div>
+          <div class="pill" id="coveragePill">COVERAGE —</div>
+        </div>
+      </header>
+
+      <section class="hero-grid">
+        <article class="card spy-card">
+          <div class="card-head"><span>SPY</span><small>UNDERLYING</small></div>
+          <div class="spy-row"><strong id="spyPrice">—</strong><span id="spyMove">—</span></div>
+          <canvas id="spark" width="600" height="110"></canvas>
+          <div class="stats3">
+            <div><label>1m</label><b id="spy1m">—</b></div>
+            <div><label>5m</label><b id="spy5m">—</b></div>
+            <div><label>VWAP</label><b id="spyVwap">—</b></div>
+          </div>
+        </article>
+
+        <article class="card decision-card">
+          <div class="card-head"><span>Decision</span><small>NO OPTIONS INPUT</small></div>
+          <div id="decisionAction" class="decision-action">WARMING</div>
+          <div id="decisionDirection" class="decision-dir">NEUTRAL</div>
+          <div class="meter"><div id="confidenceBar"></div></div>
+          <div class="decision-meta"><span>confidence</span><b id="confidence">—</b><span>score</span><b id="score">—</b></div>
+          <div id="gateStrip" class="gates"></div>
+        </article>
+
+        <article class="card flow-card">
+          <div class="card-head"><span>Tape Pressure</span><small>500 NAMES</small></div>
+          <div class="split-gauge">
+            <div><label>Equal weight</label><strong id="flowEW">—</strong><div class="axis"><i id="flowEWBar"></i></div></div>
+            <div><label>SPY weight</label><strong id="flowW">—</strong><div class="axis"><i id="flowWBar"></i></div></div>
+          </div>
+          <div class="stats3">
+            <div><label>Buy flow</label><b id="buyFlow">—</b></div>
+            <div><label>Participation</label><b id="participation">—</b></div>
+            <div><label>Concentration</label><b id="concentration">—</b></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="section-title"><h2>Forecast Stack</h2><span>SPY outcome · indicators + breadth + order flow</span></section>
+      <section id="forecastGrid" class="forecast-grid"></section>
+
+      <section class="two-col">
+        <article class="card internals-card">
+          <div class="card-head"><span>Market Internals</span><small>EQUAL vs CAP WEIGHTED</small></div>
+          <div class="internal-row"><label>Trend</label><div class="duo"><span id="trendEW">—</span><span id="trendW">—</span></div></div>
+          <div class="internal-row"><label>Momentum</label><div class="duo"><span id="momEW">—</span><span id="momW">—</span></div></div>
+          <div class="internal-row"><label>Relative volume</label><div class="duo"><span id="volEW">—</span><span id="volW">—</span></div></div>
+          <div class="internal-row"><label>Volatility</label><div class="duo"><span id="rvEW">—</span><span id="rvW">—</span></div></div>
+          <div class="breadth-grid">
+            <div><b id="aboveVwap">—</b><span>above VWAP</span></div>
+            <div><b id="emaBull">—</b><span>EMA 8 &gt; 21</span></div>
+            <div><b id="positive5">—</b><span>positive 5m</span></div>
+            <div><b id="breadthAccel">—</b><span>breadth accel</span></div>
+          </div>
+        </article>
+
+        <article class="card options-card">
+          <div class="card-head"><span>Options Expression</span><small>DOWNSTREAM ONLY</small></div>
+          <div id="optionEmpty" class="empty">No option structure until the tape produces a qualified TRADE signal.</div>
+          <div id="optionPlan" class="option-plan hidden">
+            <div class="strategy" id="optionStrategy">—</div>
+            <div class="option-kpis">
+              <div><span>Debit</span><b id="optionDebit">—</b></div>
+              <div><span>Max loss</span><b id="optionLoss">—</b></div>
+              <div><span>Max profit</span><b id="optionProfit">—</b></div>
+            </div>
+            <div id="optionLegs" class="legs"></div>
+          </div>
+        </article>
+      </section>
+
+      <section class="section-title"><h2>Sector Tape</h2><span>participation and directional pressure</span></section>
+      <section class="card table-card">
+        <table><thead><tr><th>Sector</th><th>Names</th><th>Weight</th><th>Trend</th><th>Momentum</th><th>Flow</th><th>Participation</th></tr></thead><tbody id="sectorRows"></tbody></table>
+      </section>
+
+      <footer><span id="eventCount">0 stream events</span><span id="lastUpdate">—</span></footer>
+    </main>
+  </div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

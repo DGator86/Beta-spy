@@ -1,0 +1,5 @@
+symbol,name,sector,weight
+AAPL,Apple,Information Technology,0.25
+MSFT,Microsoft,Information Technology,0.25
+JPM,JPMorgan,Financials,0.25
+XOM,Exxon Mobil,Energy,0.25

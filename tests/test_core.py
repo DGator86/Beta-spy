@@ -1,0 +1,226 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from beta_spy.breadth import BreadthAggregator
+from beta_spy.engine import Tape500Engine
+from beta_spy.flow import FlowAccumulator
+from beta_spy.models import (
+    FlowFeatures,
+    HoldingMeta,
+    MinuteBar,
+    QuoteTop,
+    SymbolFeatures,
+    TradePrint,
+)
+from beta_spy.replay import HistoricalReplay
+from beta_spy.storage import Tape500Store
+
+
+def test_flow_classifies_tape_and_quote_pressure() -> None:
+    t = datetime(2026, 8, 13, 14, 0, tzinfo=UTC)
+    flow = FlowAccumulator()
+    flow.on_quote(QuoteTop("AAPL", t, 100.0, 100.02, 300, 100))
+    flow.on_trade(TradePrint("AAPL", t, 100.02, 200, 100.0, 100.02))
+    flow.on_trade(TradePrint("AAPL", t + timedelta(seconds=1), 100.00, 100, 100.0, 100.02))
+    result = flow.snapshot()
+    assert result.order_flow_imbalance == (200 - 100) / 300
+    assert result.quote_imbalance == 0.5
+    assert result.average_spread_bps is not None
+    assert result.trade_intensity > 0
+
+
+def _feature(symbol: str, weight: float, sector: str, direction: float) -> SymbolFeatures:
+    t = datetime(2026, 8, 13, 14, 0, tzinfo=UTC)
+    close = 100.0 * (1.0 + direction * 0.001)
+    return SymbolFeatures(
+        symbol=symbol,
+        timestamp=t,
+        sector=sector,
+        weight=weight,
+        close=close,
+        return_1m=direction * 0.001,
+        return_5m=direction * 0.002,
+        return_15m=direction * 0.003,
+        vwap=100.0,
+        vwap_distance_bps=direction * 10.0,
+        ema8=100.2 if direction > 0 else 99.8,
+        ema21=100.0,
+        ema8_slope_bps=direction * 1.0,
+        ema21_slope_bps=direction * 0.5,
+        rsi14=60.0 if direction > 0 else 40.0,
+        atr14_bps=12.0,
+        realized_vol20_bps=10.0,
+        relative_volume20=1.5,
+        range_expansion=1.3,
+        flow=FlowFeatures(
+            order_flow_imbalance=direction * 0.6,
+            quote_imbalance=direction * 0.4,
+            average_spread_bps=1.0,
+            price_impact_bps_per_10k=direction * 1.0,
+            absorption=0.0,
+        ),
+    )
+
+
+def test_breadth_exposes_equal_and_weighted_state() -> None:
+    t = datetime(2026, 8, 13, 14, 0, tzinfo=UTC)
+    items = [
+        _feature("BIG", 0.8, "Technology", -1),
+        _feature("SMALL1", 0.1, "Financials", 1),
+        _feature("SMALL2", 0.1, "Industrials", 1),
+        _feature("SPY", 0.0, "ETF", 1),
+    ]
+    factors = BreadthAggregator().aggregate(items, timestamp=t, expected_symbol_count=3)
+    assert factors.trend_ew is not None and factors.trend_ew > 0
+    assert factors.trend_weighted is not None and factors.trend_weighted < 0
+    assert factors.pct_positive_5m == 2 / 3
+    assert len(factors.sectors) == 3
+
+
+def test_engine_builds_snapshot_after_history() -> None:
+    holdings = [
+        HoldingMeta("AAA", "Technology", 0.5),
+        HoldingMeta("BBB", "Financials", 0.5),
+    ]
+    engine = Tape500Engine(holdings)
+    start = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    for minute in range(40):
+        ts = start + timedelta(minutes=minute)
+        for symbol, base in [("AAA", 100.0), ("BBB", 80.0), ("SPY", 600.0)]:
+            close = base * (1.0 + minute * 0.0002)
+            engine.add_bar(
+                MinuteBar(symbol, ts, close * 0.9998, close * 1.0003, close * 0.9995, close, 1000 + minute)
+            )
+    snapshot = engine.build_snapshot(start + timedelta(minutes=40))
+    assert snapshot is not None
+    assert snapshot.factors.coverage_ratio == 1.0
+    assert len(snapshot.forecasts) == 3
+    assert snapshot.decision.action in {"TRADE", "NO_TRADE"}
+
+
+def test_store_and_replay(tmp_path: Path) -> None:
+    holdings = [HoldingMeta("AAA", "Technology", 1.0)]
+    store = Tape500Store(tmp_path / "tape.db")
+    start = datetime(2026, 8, 13, 13, 30, tzinfo=UTC)
+    bars = []
+    for minute in range(35):
+        ts = start + timedelta(minutes=minute)
+        bars.extend(
+            [
+                MinuteBar("AAA", ts, 100, 101, 99, 100 + minute * 0.01, 1000),
+                MinuteBar("SPY", ts, 600, 601, 599, 600 + minute * 0.02, 5000),
+            ]
+        )
+    store.save_bars(bars)
+    engine = Tape500Engine(holdings)
+    outputs = list(HistoricalReplay(store, engine).run())
+    assert len(outputs) == 35
+    assert outputs[-1].factors.coverage_ratio == 1.0
+    store.close()
+
+
+def test_historical_flow_aggregation_without_raw_tick_storage(tmp_path):
+    from beta_spy.historical import AlpacaHistoricalClient
+
+    class Fake(AlpacaHistoricalClient):
+        def __init__(self):
+            pass
+
+        def iter_quotes(self, symbol, start, end, *, feed="sip"):
+            yield {"t": "2026-08-13T14:30:01Z", "bp": 99.99, "ap": 100.01, "bs": 800, "as": 200}
+            yield {"t": "2026-08-13T14:30:40Z", "bp": 100.00, "ap": 100.02, "bs": 700, "as": 300}
+
+        def iter_trades(self, symbol, start, end, *, feed="sip"):
+            yield {"t": "2026-08-13T14:30:02Z", "p": 100.01, "s": 100, "i": 1}
+            yield {"t": "2026-08-13T14:30:41Z", "p": 100.00, "s": 50, "i": 2}
+
+    store = Tape500Store(tmp_path / "flow.sqlite")
+    try:
+        start = datetime(2026, 8, 13, 14, 30, tzinfo=UTC)
+        end = datetime(2026, 8, 13, 14, 31, tzinfo=UTC)
+        count = Fake().backfill_minute_flow(store, ["AAA"], start, end)
+        assert count == 1
+        rows = store.flows_for_timestamp(start)
+        flow = rows["AAA"]
+        assert flow.buy_volume == 100
+        assert flow.sell_volume == 50
+        assert flow.quote_imbalance is not None and flow.quote_imbalance > 0
+    finally:
+        store.close()
+
+
+def test_option_planner_selects_defined_risk_call_spread():
+    from beta_spy.options import plan_debit_spread
+
+    rows = [
+        {"symbol": "C100", "expiration": "2026-08-13", "right": "C", "strike": 100, "bid": 1.00, "ask": 1.05, "delta": .56, "open_interest": 1000},
+        {"symbol": "C101", "expiration": "2026-08-13", "right": "C", "strike": 101, "bid": .45, "ask": .50, "delta": .31, "open_interest": 800},
+        {"symbol": "C102", "expiration": "2026-08-13", "right": "C", "strike": 102, "bid": .18, "ask": .22, "delta": .17, "open_interest": 700},
+    ]
+    plan = plan_debit_spread(rows, "BULLISH", maximum_risk_dollars=100)
+    assert plan is not None
+    assert plan.strategy == "CALL_DEBIT_SPREAD"
+    assert plan.max_loss_dollars <= 100
+    assert plan.legs[0].side == "BUY" and plan.legs[1].side == "SELL"
+
+
+def test_causal_backtest_report_scores_matured_forecasts(tmp_path: Path) -> None:
+    from beta_spy.backtest import run_backtest, write_report
+
+    holdings = [HoldingMeta("AAA", "Technology", 1.0)]
+    store = Tape500Store(tmp_path / "bt.sqlite")
+    start = datetime(2026, 8, 10, 13, 30, tzinfo=UTC)
+    bars = []
+    for minute in range(300):
+        ts = start + timedelta(minutes=minute)
+        drift = minute * 0.00005
+        bars.append(MinuteBar("AAA", ts, 100, 101, 99, 100 * (1 + drift), 10000 + minute))
+        bars.append(MinuteBar("SPY", ts, 600, 601, 599, 600 * (1 + drift * 0.8), 50000 + minute))
+    store.save_bars(bars)
+    report, observations = run_backtest(store, holdings)
+    assert report.snapshots == 300
+    assert observations
+    by_horizon = {item.horizon_minutes: item for item in report.horizons}
+    assert by_horizon[15].observations > 200
+    assert by_horizon[15].model_ready_observations > 0
+    md, js = write_report(report, tmp_path / "report")
+    assert md.exists() and js.exists()
+    store.close()
+
+
+def test_tradier_historical_timesales_parsing(tmp_path: Path) -> None:
+    import httpx
+    from beta_spy.historical import TradierHistoricalClient
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/markets/timesales")
+        return httpx.Response(
+            200,
+            headers={"X-Ratelimit-Available": "100"},
+            json={"series": {"data": [{
+                "timestamp": 1786632600,
+                "open": 100.0, "high": 101.0, "low": 99.5, "close": 100.5,
+                "volume": 12345, "vwap": 100.4,
+            }]}}
+        )
+
+    client = TradierHistoricalClient("token")
+    client.client.close()
+    client.client = httpx.Client(
+        base_url="https://api.tradier.com/v1",
+        transport=httpx.MockTransport(handler),
+        headers={"Authorization": "Bearer token", "Accept": "application/json"},
+    )
+    try:
+        rows = list(client.iter_bars(
+            "AAA",
+            datetime(2026, 8, 13, 13, 30, tzinfo=UTC),
+            datetime(2026, 8, 13, 20, 0, tzinfo=UTC),
+        ))
+        assert len(rows) == 1
+        assert rows[0].close == 100.5
+        assert rows[0].vwap == 100.4
+    finally:
+        client.close()

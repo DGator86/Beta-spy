@@ -1,0 +1,15 @@
+[Unit]
+Description=Beta-spy historical fetch and causal backtest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=betaspy
+Group=betaspy
+Environment=BETA_SPY_HOME=/opt/beta-spy
+Environment=BETA_SPY_BIN=/opt/beta-spy/venv/bin/beta-spy
+ExecStart=/opt/beta-spy/scripts/run-nightly-backtest.sh
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
