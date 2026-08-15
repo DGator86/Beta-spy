@@ -212,10 +212,28 @@ class TradierMarketStream:
                     "delta": greeks.get("delta"),
                 }
             )
+        primary = next(
+            (
+                forecast
+                for forecast in snapshot.forecasts
+                if forecast.horizon_minutes == snapshot.decision.primary_horizon
+            ),
+            None,
+        )
+        expected_move_dollars: float | None = None
+        probability: float | None = None
+        risk_budget = self.maximum_option_risk_dollars * snapshot.decision.risk_multiplier
+        if primary is not None:
+            spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
+            if spy is not None and spy.close > 0:
+                expected_move_dollars = spy.close * abs(primary.expected_return_bps) / 10_000.0
+            probability = max(primary.probability_up, 1.0 - primary.probability_up)
         return plan_debit_spread(
             normalized,
             snapshot.decision.direction,
-            maximum_risk_dollars=self.maximum_option_risk_dollars,
+            maximum_risk_dollars=risk_budget,
+            expected_move_dollars=expected_move_dollars,
+            probability=probability,
         )
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:

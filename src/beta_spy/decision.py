@@ -49,8 +49,21 @@ class DecisionEngine:
         bullish = primary.probability_up >= self.min_probability
         bearish = primary.probability_up <= 1.0 - self.min_probability
         direction = 1 if bullish else -1 if bearish else 0
-        directions = [forecast.direction for forecast in forecasts if forecast.confidence > 0.05]
-        agreement = sum(item == direction for item in directions) >= 2 if direction else False
+        # Only the fast horizons vote: the 30m model tested at coin-flip
+        # accuracy and must not confirm or veto a trade.
+        fast_horizons = [
+            forecast
+            for forecast in forecasts
+            if forecast.horizon_minutes <= self.primary_horizon
+        ]
+        agreement = (
+            bool(direction)
+            and len(fast_horizons) >= 2
+            and all(
+                forecast.confidence > 0.05 and forecast.direction == direction
+                for forecast in fast_horizons
+            )
+        )
 
         breadth_signals = [
             _sign(factors.trend_ew),
@@ -104,6 +117,8 @@ class DecisionEngine:
         if all(gates.values()):
             side = "BULLISH" if direction > 0 else "BEARISH"
             structure = "CALL_DEBIT_SPREAD" if direction > 0 else "PUT_DEBIT_SPREAD"
+            edge = abs(primary.probability_up - 0.5)
+            risk_multiplier = float(min(max(edge / 0.10, 0.5), 2.0))
             return Decision(
                 timestamp=timestamp,
                 action="TRADE",
@@ -114,6 +129,7 @@ class DecisionEngine:
                 gates=gates,
                 reasons=("Constituent breadth, flow, and forecast stack are aligned",),
                 structure=structure,
+                risk_multiplier=risk_multiplier,
             )
         return Decision(
             timestamp=timestamp,

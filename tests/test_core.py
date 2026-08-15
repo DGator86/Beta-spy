@@ -166,6 +166,37 @@ def test_option_planner_selects_defined_risk_call_spread():
     assert plan.legs[0].side == "BUY" and plan.legs[1].side == "SELL"
 
 
+def test_option_planner_expected_value_path_sizes_and_rejects():
+    from beta_spy.options import plan_debit_spread
+
+    rows = [
+        {"symbol": "C100", "expiration": "2026-08-13", "right": "C", "strike": 100, "bid": 1.00, "ask": 1.05, "delta": .56, "open_interest": 1000},
+        {"symbol": "C101", "expiration": "2026-08-13", "right": "C", "strike": 101, "bid": .45, "ask": .50, "delta": .31, "open_interest": 800},
+        {"symbol": "C102", "expiration": "2026-08-13", "right": "C", "strike": 102, "bid": .18, "ask": .22, "delta": .17, "open_interest": 700},
+    ]
+    plan = plan_debit_spread(
+        rows,
+        "BULLISH",
+        maximum_risk_dollars=200,
+        expected_move_dollars=1.20,
+        probability=0.62,
+    )
+    assert plan is not None
+    assert plan.expected_value_dollars is not None and plan.expected_value_dollars > 0
+    assert plan.contracts >= 1
+    assert plan.total_risk_dollars <= 200 + 1e-6
+
+    # A negligible expected move cannot pay the entry friction: no trade.
+    rejected = plan_debit_spread(
+        rows,
+        "BULLISH",
+        maximum_risk_dollars=200,
+        expected_move_dollars=0.01,
+        probability=0.52,
+    )
+    assert rejected is None
+
+
 def test_causal_backtest_report_scores_matured_forecasts(tmp_path: Path) -> None:
     from beta_spy.backtest import run_backtest, write_report
 
