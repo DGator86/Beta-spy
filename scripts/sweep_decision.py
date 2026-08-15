@@ -75,6 +75,8 @@ def evaluate(df: pd.DataFrame, *, horizon: int, min_p: float, breadth_mode: str,
     edge = (p[mask] - 0.5).abs()
     size = np.clip(edge / 0.10, 0.5, 2.0) if conf_sizing else pd.Series(1.0, index=realized.index)
     pnl = realized * size
+    deviation = float(pnl.std(ddof=1)) if len(pnl) > 1 else 0.0
+    t_stat = float(pnl.mean() / (deviation / np.sqrt(len(pnl)))) if deviation > 0 else 0.0
     return {
         "trades": int(mask.sum()),
         "accuracy": float((realized > 0).mean()),
@@ -82,6 +84,7 @@ def evaluate(df: pd.DataFrame, *, horizon: int, min_p: float, breadth_mode: str,
         "sized_total_bps": float(pnl.sum()),
         "sized_mean_bps": float(pnl.mean()),
         "flat_total_bps": float(realized.sum()),
+        "t_stat": t_stat,
     }
 
 
