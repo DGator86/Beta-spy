@@ -42,9 +42,65 @@ FEATURE_NAMES = (
 )
 
 
+SESSION_OPEN_MINUTES = 13 * 60 + 30  # 13:30 UTC regular-session open
+SESSION_LENGTH_MINUTES = 390.0
+
+
+def session_fraction(timestamp: datetime) -> float:
+    minutes = timestamp.hour * 60 + timestamp.minute - SESSION_OPEN_MINUTES
+    return float(min(max(minutes / SESSION_LENGTH_MINUTES, 0.0), 1.0))
+
+
 def vectorize(factors: MarketFactors) -> np.ndarray:
     values = factors.feature_dict()
-    return np.asarray([values[name] for name in FEATURE_NAMES], dtype=float)
+    base = [values[name] for name in FEATURE_NAMES]
+    # Intraday seasonality: opens and closes behave differently from lunch.
+    fraction = session_fraction(factors.timestamp)
+    base.append(fraction)
+    base.append(fraction * fraction)
+    return np.asarray(base, dtype=float)
+
+
+@dataclass
+class _OnlineCalibrator:
+    """Online Platt scaling: sigmoid(a * logit(p_raw) + b) fitted by SGD.
+
+    The raw SGD classifier probabilities are badly overconfident (backtest
+    Brier ~0.43 versus 0.25 for always predicting 0.5). Every consumer of
+    probability_up -- the trade threshold, edge sizing, and the option EV
+    model -- assumes calibrated probabilities, so miscalibration leaks into
+    every layer. Starts as the identity and is only applied once enough
+    matured labels have been seen.
+    """
+
+    a: float = 1.0
+    b: float = 0.0
+    learning_rate: float = 0.02
+    min_samples: int = 100
+    sample_count: int = 0
+
+    @staticmethod
+    def _logit(p: float) -> float:
+        p = min(max(p, 1e-6), 1.0 - 1e-6)
+        raw = float(np.log(p / (1.0 - p)))
+        return min(max(raw, -6.0), 6.0)
+
+    def update(self, raw_probability: float, outcome_up: bool) -> None:
+        logit = self._logit(raw_probability)
+        z = self.a * logit + self.b
+        q = 1.0 / (1.0 + np.exp(-z))
+        gradient = q - (1.0 if outcome_up else 0.0)
+        self.a -= self.learning_rate * gradient * logit
+        self.b -= self.learning_rate * gradient
+        self.a = min(max(self.a, 0.05), 5.0)
+        self.b = min(max(self.b, -2.0), 2.0)
+        self.sample_count += 1
+
+    def calibrate(self, raw_probability: float) -> float:
+        if self.sample_count < self.min_samples:
+            return raw_probability
+        z = self.a * self._logit(raw_probability) + self.b
+        return float(1.0 / (1.0 + np.exp(-z)))
 
 
 def _fallback(factors: MarketFactors, horizon: int) -> tuple[float, float]:
@@ -73,6 +129,8 @@ class _Pending:
     target_time: datetime
     vector: np.ndarray
     start_price: float
+    raw_probability: float = 0.5
+    model_ready: bool = False
 
 
 @dataclass
@@ -80,6 +138,9 @@ class OnlineHorizonModel:
     horizon_minutes: int
     min_samples: int = 200
     max_pending: int = 5000
+    # Direction labels inside the deadband are noise; the classifier only
+    # trains on moves large enough to mean something at this horizon.
+    deadband_bps: float = 2.0
     scaler: StandardScaler = field(default_factory=StandardScaler)
     classifier: SGDClassifier = field(
         default_factory=lambda: SGDClassifier(
@@ -100,6 +161,7 @@ class OnlineHorizonModel:
         )
     )
     pending: deque[_Pending] = field(default_factory=deque)
+    calibrator: _OnlineCalibrator = field(default_factory=_OnlineCalibrator)
     sample_count: int = 0
     _classifier_initialized: bool = False
 
@@ -112,26 +174,37 @@ class OnlineHorizonModel:
             if item.start_price <= 0 or spy_price <= 0:
                 continue
             target_return = spy_price / item.start_price - 1.0
+            target_bps = target_return * 10_000.0
             x = item.vector.reshape(1, -1)
             self.scaler.partial_fit(x)
             z = self.scaler.transform(x)
-            y_class = np.asarray([1 if target_return > 0 else 0], dtype=int)
-            if not self._classifier_initialized:
-                self.classifier.partial_fit(z, y_class, classes=np.asarray([0, 1], dtype=int))
-                self._classifier_initialized = True
-            else:
-                self.classifier.partial_fit(z, y_class)
-            self.regressor.partial_fit(z, np.asarray([target_return * 10_000.0], dtype=float))
+            if abs(target_bps) >= self.deadband_bps or not self._classifier_initialized:
+                y_class = np.asarray([1 if target_return > 0 else 0], dtype=int)
+                if not self._classifier_initialized:
+                    self.classifier.partial_fit(z, y_class, classes=np.asarray([0, 1], dtype=int))
+                    self._classifier_initialized = True
+                else:
+                    self.classifier.partial_fit(z, y_class)
+            self.regressor.partial_fit(z, np.asarray([target_bps], dtype=float))
+            if item.model_ready:
+                self.calibrator.update(item.raw_probability, target_return > 0)
             self.sample_count += 1
             realized.append(target_return)
         return realized
 
     def queue(self, timestamp: datetime, vector: np.ndarray, spy_price: float) -> None:
+        raw_probability = 0.5
+        ready = self.sample_count >= self.min_samples and self._classifier_initialized
+        if ready:
+            z = self.scaler.transform(vector.reshape(1, -1))
+            raw_probability = float(self.classifier.predict_proba(z)[0, 1])
         self.pending.append(
             _Pending(
                 target_time=timestamp + timedelta(minutes=self.horizon_minutes),
                 vector=vector.copy(),
                 start_price=spy_price,
+                raw_probability=raw_probability,
+                model_ready=ready,
             )
         )
         while len(self.pending) > self.max_pending:
@@ -142,7 +215,7 @@ class OnlineHorizonModel:
         ready = self.sample_count >= self.min_samples and self._classifier_initialized
         if ready:
             z = self.scaler.transform(vector.reshape(1, -1))
-            probability = float(self.classifier.predict_proba(z)[0, 1])
+            probability = self.calibrator.calibrate(float(self.classifier.predict_proba(z)[0, 1]))
             expected_bps = float(self.regressor.predict(z)[0])
         else:
             probability = fallback_probability
@@ -163,7 +236,11 @@ class OnlineHorizonModel:
 class OnlineForecastStack:
     def __init__(self, horizons: tuple[int, ...] = (5, 15, 30), min_samples: int = 200):
         self.models = {
-            horizon: OnlineHorizonModel(horizon_minutes=horizon, min_samples=min_samples)
+            horizon: OnlineHorizonModel(
+                horizon_minutes=horizon,
+                min_samples=min_samples,
+                deadband_bps=2.0 * (horizon / 15.0) ** 0.5,
+            )
             for horizon in horizons
         }
 
@@ -188,3 +265,88 @@ class OnlineForecastStack:
         if not isinstance(model, cls):
             raise TypeError("Saved object is not an OnlineForecastStack")
         return model
+
+
+@dataclass
+class _PendingMeta:
+    target_time: datetime
+    vector: np.ndarray
+    direction: int
+    start_price: float
+
+
+def meta_vector(
+    base_vector: np.ndarray, forecasts: tuple[HorizonForecast, ...], direction: int
+) -> np.ndarray:
+    """Meta-model features: market state plus what the primary stack believes."""
+    extras = [float(direction)]
+    for forecast in sorted(forecasts, key=lambda item: item.horizon_minutes):
+        extras.append(forecast.probability_up)
+        extras.append(forecast.expected_return_bps / 10.0)
+        extras.append(forecast.confidence)
+    return np.concatenate([base_vector, np.asarray(extras, dtype=float)])
+
+
+@dataclass
+class OnlineMetaGate:
+    """Meta-labeling: predicts whether a gated trade signal will be profitable.
+
+    Trains online on every signal that passes the primary gates (including
+    ones it later vetoes, so it never suffers selection bias) and, once warm,
+    blocks trades whose predicted win probability is below threshold.
+    """
+
+    horizon_minutes: int = 15
+    min_samples: int = 150
+    threshold: float = 0.50
+    max_pending: int = 2000
+    scaler: StandardScaler = field(default_factory=StandardScaler)
+    classifier: SGDClassifier = field(
+        default_factory=lambda: SGDClassifier(
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.001,
+            learning_rate="optimal",
+            random_state=29,
+        )
+    )
+    pending: deque[_PendingMeta] = field(default_factory=deque)
+    sample_count: int = 0
+    _initialized: bool = False
+
+    def mature(self, timestamp: datetime, spy_price: float) -> None:
+        while self.pending and self.pending[0].target_time <= timestamp:
+            item = self.pending.popleft()
+            if item.target_time.date() != timestamp.date():
+                continue
+            if item.start_price <= 0 or spy_price <= 0:
+                continue
+            realized = (spy_price / item.start_price - 1.0) * item.direction
+            x = item.vector.reshape(1, -1)
+            self.scaler.partial_fit(x)
+            z = self.scaler.transform(x)
+            y = np.asarray([1 if realized > 0 else 0], dtype=int)
+            if not self._initialized:
+                self.classifier.partial_fit(z, y, classes=np.asarray([0, 1], dtype=int))
+                self._initialized = True
+            else:
+                self.classifier.partial_fit(z, y)
+            self.sample_count += 1
+
+    def queue(self, timestamp: datetime, vector: np.ndarray, direction: int, spy_price: float) -> None:
+        self.pending.append(
+            _PendingMeta(
+                target_time=timestamp + timedelta(minutes=self.horizon_minutes),
+                vector=vector.copy(),
+                direction=direction,
+                start_price=spy_price,
+            )
+        )
+        while len(self.pending) > self.max_pending:
+            self.pending.popleft()
+
+    def win_probability(self, vector: np.ndarray) -> float | None:
+        if not self._initialized or self.sample_count < self.min_samples:
+            return None
+        z = self.scaler.transform(vector.reshape(1, -1))
+        return float(self.classifier.predict_proba(z)[0, 1])

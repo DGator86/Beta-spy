@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -9,7 +9,7 @@ from typing import Any, Iterable
 from .breadth import BreadthAggregator
 from .decision import DecisionEngine
 from .flow import FlowAccumulator
-from .forecast import OnlineForecastStack
+from .forecast import OnlineForecastStack, OnlineMetaGate, meta_vector, vectorize
 from .indicators import SymbolIndicatorState
 from .models import (
     EngineSnapshot,
@@ -115,6 +115,7 @@ class Tape500Engine:
         self.aggregator = BreadthAggregator()
         self.forecasts = forecast_stack or OnlineForecastStack()
         self.decisions = decision_engine or DecisionEngine()
+        self.meta_gate = OnlineMetaGate()
 
     @classmethod
     def from_holdings(
@@ -276,6 +277,25 @@ class Tape500Engine:
             return None
         forecasts = self.forecasts.step(timestamp, factors, spy.close)
         decision = self.decisions.decide(timestamp, factors, forecasts)
+        self.meta_gate.mature(timestamp, spy.close)
+        if decision.action == "TRADE":
+            direction = 1 if decision.direction == "BULLISH" else -1
+            x_meta = meta_vector(vectorize(factors), forecasts, direction)
+            # Queue before filtering so the meta model trains on every gated
+            # signal, including the ones it vetoes (no selection bias).
+            self.meta_gate.queue(timestamp, x_meta, direction, spy.close)
+            win_probability = self.meta_gate.win_probability(x_meta)
+            if win_probability is not None and win_probability < self.meta_gate.threshold:
+                decision = replace(
+                    decision,
+                    action="NO_TRADE",
+                    gates={**decision.gates, "meta_filter": False},
+                    reasons=(
+                        f"Meta-model win probability {win_probability:.2f} is below "
+                        f"{self.meta_gate.threshold:.2f}",
+                    ),
+                    structure=None,
+                )
         snapshot = EngineSnapshot(
             timestamp=timestamp,
             factors=factors,
