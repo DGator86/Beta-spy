@@ -413,7 +413,13 @@ class TradierHistoricalClient:
         total = 0
         symbols = list(dict.fromkeys(str(symbol) for symbol in symbols))
         for index, symbol in enumerate(symbols, start=1):
-            rows = list(self.iter_bars(symbol, start, end, interval=interval, session_filter=session_filter))
+            try:
+                rows = list(self.iter_bars(symbol, start, end, interval=interval, session_filter=session_filter))
+            except httpx.HTTPStatusError as error:
+                # One unknown or delisted symbol must not abort a 500-symbol
+                # backfill; 4xx here means Tradier does not know the symbol.
+                print(f"Tradier historical: skipping {symbol}: {error}", flush=True)
+                continue
             if rows:
                 store.save_bars(rows)
                 total += len(rows)

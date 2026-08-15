@@ -117,6 +117,11 @@ def _parse_ssga_xlsx(payload: bytes) -> list[HoldingMeta]:
         symbol = normalize_symbol(row.get(ticker_col, ""))
         if not symbol or symbol in {"-", "NAN", "CASH", "USD"}:
             continue
+        # Index files carry placeholder identifiers (e.g. "2602335D") for
+        # cash/pending lines; real US equity tickers are letters with an
+        # optional class suffix.
+        if not re.fullmatch(r"[A-Z]+(/[A-Z]+)?", symbol):
+            continue
         try:
             raw_weight = str(row.get(weight_col, "0")).replace("%", "").replace(",", "")
             weight = float(raw_weight) / 100.0
