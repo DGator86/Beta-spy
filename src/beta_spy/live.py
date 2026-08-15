@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from websockets.exceptions import ConnectionClosed
@@ -63,6 +63,7 @@ class TradierMarketStream:
         snapshot_seconds: float = 60.0,
         maximum_option_risk_dollars: float = 100.0,
         ledger: PaperLedger | None = None,
+        warmup: Callable[[], None] | None = None,
     ) -> None:
         self.token = access_token.strip()
         if not self.token:
@@ -72,6 +73,7 @@ class TradierMarketStream:
         self.snapshot_seconds = snapshot_seconds
         self.maximum_option_risk_dollars = maximum_option_risk_dollars
         self.ledger = ledger
+        self.warmup = warmup
         self._stop = threading.Event()
         self._events = 0
         self._reconnects = 0
@@ -89,6 +91,15 @@ class TradierMarketStream:
         self._http.close()
 
     def run_forever(self) -> None:
+        if self.warmup is not None:
+            # Replay stored sessions through the engine so the online models,
+            # calibrators, and meta gate are ready at the opening bell instead
+            # of spending the first hours of the session warming from zero.
+            self.hub.update(status="WARMSTART")
+            try:
+                self.warmup()
+            except Exception as exc:  # noqa: BLE001 - warm-start must never block live start
+                self.hub.patch_stream(last_error=f"warm-start failed: {exc}")
         symbols = list(self.engine.holdings)
         if "SPY" not in symbols:
             symbols.append("SPY")

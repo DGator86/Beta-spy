@@ -45,6 +45,12 @@ def main() -> None:
         default=None,
         help="Stop opening paper positions after this realized daily loss (default: 3x --risk)",
     )
+    run.add_argument(
+        "--warm-sessions",
+        type=int,
+        default=3,
+        help="Replay this many stored sessions at startup so models open warm (0 disables)",
+    )
 
     demo = sub.add_parser("demo", help="Run the dashboard against a deterministic synthetic tape")
     demo.add_argument("--db", default="data/beta-spy-demo.sqlite")
@@ -180,18 +186,39 @@ def main() -> None:
         holdings = _load_holdings(args.universe)
         store = Tape500Store(args.db)
         hub = StateHub()
+        engine = Tape500Engine(holdings, store=store)
         ledger = PaperLedger(
             store,
             daily_loss_limit_dollars=(
                 args.daily_loss_limit if args.daily_loss_limit is not None else args.risk * 3.0
             ),
         )
+
+        def _warm_start() -> None:
+            with store.lock:
+                dates = [
+                    str(row[0])
+                    for row in store.connection.execute(
+                        "SELECT DISTINCT substr(timestamp, 1, 10) FROM minute_bars ORDER BY 1"
+                    ).fetchall()
+                ]
+            recent = dates[-args.warm_sessions :]
+            if not recent:
+                return
+            start = datetime.fromisoformat(recent[0] + "T00:00:00+00:00")
+            print(f"warm-start: replaying {len(recent)} stored sessions from {recent[0]}…", flush=True)
+            count = 0
+            for _ in HistoricalReplay(store, engine).run(start=start):
+                count += 1
+            print(f"warm-start: replayed {count} snapshots; models ready", flush=True)
+
         stream = TradierMarketStream(
             token,
-            Tape500Engine(holdings, store=store),
+            engine,
             hub,
             maximum_option_risk_dollars=args.risk,
             ledger=ledger,
+            warmup=_warm_start if args.warm_sessions > 0 else None,
         )
         thread = threading.Thread(target=stream.run_forever, daemon=True, name="tradier-tape")
         thread.start()
