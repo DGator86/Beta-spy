@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from datetime import datetime
 
 from .models import Decision, HorizonForecast, MarketFactors
@@ -20,12 +21,24 @@ class DecisionEngine:
         min_coverage: float = 0.90,
         min_covered_weight: float = 0.85,
         max_spy_spread_bps: float = 4.0,
+        neutral_premium_enabled: bool = True,
+        neutral_max_edge: float = 0.12,
+        quiet_return_threshold: float = 0.00016,
+        quiet_volatility_threshold: float = 0.25,
+        quiet_window_minutes: int = 15,
     ) -> None:
         self.primary_horizon = primary_horizon
         self.min_probability = min_probability
         self.min_coverage = min_coverage
         self.min_covered_weight = min_covered_weight
         self.max_spy_spread_bps = max_spy_spread_bps
+        self.neutral_premium_enabled = neutral_premium_enabled
+        self.neutral_max_edge = neutral_max_edge
+        self.quiet_return_threshold = quiet_return_threshold
+        self.quiet_volatility_threshold = quiet_volatility_threshold
+        self.quiet_window_minutes = quiet_window_minutes
+        self._recent_returns: deque[float] = deque(maxlen=quiet_window_minutes)
+        self._last_session: object = None
 
     def decide(
         self,
@@ -33,6 +46,11 @@ class DecisionEngine:
         factors: MarketFactors,
         forecasts: tuple[HorizonForecast, ...],
     ) -> Decision:
+        if timestamp.date() != self._last_session:
+            self._recent_returns.clear()
+            self._last_session = timestamp.date()
+        if factors.spy_return_1m is not None:
+            self._recent_returns.append(abs(float(factors.spy_return_1m)))
         by_horizon = {forecast.horizon_minutes: forecast for forecast in forecasts}
         primary = by_horizon.get(self.primary_horizon)
         if primary is None:
@@ -131,6 +149,9 @@ class DecisionEngine:
                 structure=structure,
                 risk_multiplier=risk_multiplier,
             )
+        neutral = self._neutral_premium_decision(timestamp, factors, forecasts, gates)
+        if neutral is not None:
+            return neutral
         return Decision(
             timestamp=timestamp,
             action="NO_TRADE",
@@ -140,4 +161,64 @@ class DecisionEngine:
             primary_horizon=self.primary_horizon,
             gates=gates,
             reasons=tuple(reasons),
+        )
+
+    def _neutral_premium_decision(
+        self,
+        timestamp: datetime,
+        factors: MarketFactors,
+        forecasts: tuple[HorizonForecast, ...],
+        directional_gates: dict[str, bool],
+    ) -> Decision | None:
+        """Sell defined-risk premium (iron condor) only on a genuinely quiet tape.
+
+        Model neutrality alone is anti-predictive: when the forecasts sit near
+        0.5, realized moves are historically about twice normal size. Premium
+        is therefore sold only when there is no directional edge AND the tape
+        itself has been quiet — small recent SPY returns and low weighted
+        constituent volatility — which did select small forward moves in and
+        out of sample.
+        """
+        if not self.neutral_premium_enabled:
+            return None
+        # Only the fast horizons define "no edge"; the 30m model's spurious
+        # edges would otherwise block nearly every quiet window.
+        max_edge = max(
+            (
+                abs(f.probability_up - 0.5)
+                for f in forecasts
+                if f.horizon_minutes <= self.primary_horizon
+            ),
+            default=1.0,
+        )
+        window_full = len(self._recent_returns) >= max(self.quiet_window_minutes - 5, 5)
+        recent_mean = (
+            sum(self._recent_returns) / len(self._recent_returns) if self._recent_returns else None
+        )
+        gates = {
+            "coverage": directional_gates.get("coverage", False),
+            "covered_weight": directional_gates.get("covered_weight", False),
+            "spy_liquidity": directional_gates.get("spy_liquidity", False),
+            "no_directional_edge": max_edge < self.neutral_max_edge,
+            "quiet_tape": bool(
+                window_full
+                and recent_mean is not None
+                and recent_mean <= self.quiet_return_threshold
+                and factors.volatility_weighted is not None
+                and factors.volatility_weighted <= self.quiet_volatility_threshold
+            ),
+        }
+        if not all(gates.values()):
+            return None
+        return Decision(
+            timestamp=timestamp,
+            action="TRADE_NEUTRAL",
+            direction="NEUTRAL",
+            confidence=1.0 - max_edge * 2.0,
+            score=0.0,
+            primary_horizon=self.primary_horizon,
+            gates=gates,
+            reasons=("Quiet tape with no directional edge: sell defined-risk premium",),
+            structure="IRON_CONDOR",
+            risk_multiplier=0.5,
         )

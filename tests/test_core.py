@@ -197,6 +197,112 @@ def test_option_planner_expected_value_path_sizes_and_rejects():
     assert rejected is None
 
 
+def _chain_with_greeks():
+    # SPY at 100. Tight markets, healthy OI, greeks present. Theta per day.
+    rows = []
+    for strike, cd, cg, ct, cb, ca in [
+        (98, .72, .030, -.18, 2.10, 2.14), (99, .63, .040, -.22, 1.30, 1.34),
+        (100, .51, .045, -.25, .70, .74), (101, .38, .042, -.23, .48, .52),
+        (102, .26, .035, -.20, .32, .36), (103, .16, .026, -.15, .14, .18),
+    ]:
+        rows.append({"symbol": f"C{strike}", "expiration": "2026-08-14", "right": "C",
+                     "strike": strike, "bid": cb, "ask": ca, "delta": cd, "gamma": cg,
+                     "theta": ct, "open_interest": 900})
+    for strike, pd_, pg, pt, pb, pa in [
+        (102, -.74, .030, -.18, 2.00, 2.04), (101, -.62, .040, -.22, 1.25, 1.29),
+        (100, -.49, .045, -.25, .68, .72), (99, -.37, .042, -.23, .46, .50),
+        (98, -.25, .035, -.20, .30, .34), (97, -.15, .026, -.15, .13, .17),
+    ]:
+        rows.append({"symbol": f"P{strike}", "expiration": "2026-08-14", "right": "P",
+                     "strike": strike, "bid": pb, "ask": pa, "delta": pd_, "gamma": pg,
+                     "theta": pt, "open_interest": 900})
+    return rows
+
+
+def test_planner_offers_credit_spreads_for_directional_signals():
+    from beta_spy.options import plan_best_strategy
+
+    plan = plan_best_strategy(
+        _chain_with_greeks(),
+        "BULLISH",
+        maximum_risk_dollars=300,
+        hold_minutes=15,
+        spy_price=100.0,
+        expected_move_dollars=0.40,
+        minutes_to_expiry=390,
+    )
+    assert plan is not None
+    assert plan.strategy in {"CALL_DEBIT_SPREAD", "PUT_CREDIT_SPREAD"}
+    assert plan.expected_value_dollars is not None and plan.expected_value_dollars > 0
+    assert plan.total_risk_dollars <= 300 + 1e-6
+    sides = {(leg.side, leg.right) for leg in plan.legs}
+    if plan.strategy == "PUT_CREDIT_SPREAD":
+        assert ("SELL", "P") in sides and ("BUY", "P") in sides
+
+
+def test_planner_sells_iron_condor_on_neutral_quiet_signal():
+    from beta_spy.options import plan_best_strategy
+
+    plan = plan_best_strategy(
+        _chain_with_greeks(),
+        "NEUTRAL",
+        maximum_risk_dollars=400,
+        hold_minutes=15,
+        spy_price=100.0,
+        expected_move_dollars=0.0,
+        minutes_to_expiry=390,
+    )
+    assert plan is not None
+    assert plan.strategy == "IRON_CONDOR"
+    assert len(plan.legs) == 4
+    sells = [leg for leg in plan.legs if leg.side == "SELL"]
+    buys = [leg for leg in plan.legs if leg.side == "BUY"]
+    assert len(sells) == 2 and len(buys) == 2
+    assert {leg.right for leg in sells} == {"C", "P"}
+    assert plan.max_loss_dollars <= 400 + 1e-6
+    assert plan.expected_value_dollars is not None and plan.expected_value_dollars > 0
+
+
+def test_neutral_trade_requires_quiet_tape_not_just_model_neutrality():
+    from beta_spy.decision import DecisionEngine
+    from beta_spy.models import HorizonForecast
+
+    engine = DecisionEngine()
+    ts = datetime(2026, 8, 10, 15, 0, tzinfo=UTC)
+    neutral_forecasts = tuple(
+        HorizonForecast(horizon_minutes=h, probability_up=0.51, expected_return_bps=0.5,
+                        confidence=0.4, model_ready=True, sample_count=500)
+        for h in (5, 15, 30)
+    )
+
+    def factors_at(minute: int, spy_return_1m: float):
+        from beta_spy.models import MarketFactors
+        return MarketFactors(
+            timestamp=ts + timedelta(minutes=minute), symbol_count=500,
+            expected_symbol_count=500, coverage_ratio=0.99, covered_weight=0.99,
+            trend_ew=0.0, trend_weighted=0.0, momentum_ew=0.0, momentum_weighted=0.0,
+            volume_ew=0.0, volume_weighted=0.0, flow_ew=0.0, flow_weighted=0.0,
+            volatility_ew=0.10, volatility_weighted=0.10, pct_above_vwap=0.5,
+            pct_ema_bullish=0.5, pct_positive_5m=0.5, pct_buy_flow=0.5,
+            participation=0.0, concentration=0.1, breadth_acceleration=0.0,
+            spy_return_1m=spy_return_1m, spy_return_5m=0.0, spy_vwap_distance_bps=0.0,
+            spy_flow=0.0, spy_quote_imbalance=0.0, spy_spread_bps=1.0,
+        )
+
+    # Loud tape: model-neutral but 1m returns are large -> must NOT sell premium.
+    for minute in range(20):
+        decision = engine.decide(ts + timedelta(minutes=minute), factors_at(minute, 0.0015), neutral_forecasts)
+    assert decision.action == "NO_TRADE"
+
+    # Quiet tape: tiny 1m returns for a full window -> condor signal fires.
+    engine = DecisionEngine()
+    for minute in range(20):
+        decision = engine.decide(ts + timedelta(minutes=minute), factors_at(minute, 0.00005), neutral_forecasts)
+    assert decision.action == "TRADE_NEUTRAL"
+    assert decision.structure == "IRON_CONDOR"
+    assert decision.risk_multiplier == 0.5
+
+
 def test_causal_backtest_report_scores_matured_forecasts(tmp_path: Path) -> None:
     from beta_spy.backtest import run_backtest, write_report
 

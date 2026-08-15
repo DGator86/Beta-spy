@@ -57,6 +57,11 @@ class DecisionMetrics:
     positive_underlying_return_rate: float | None = None
     no_trade_signals: int = 0
     gate_failure_counts: dict[str, int] = field(default_factory=dict)
+    neutral_signals: int = 0
+    matured_neutral_signals: int = 0
+    # Mean |SPY move| over the hold while short premium was on. Small values
+    # confirm the quiet-tape gate is selecting the regime condors want.
+    avg_abs_move_bps_neutral: float | None = None
 
 
 @dataclass
@@ -149,6 +154,9 @@ def run_backtest(
     last_snapshot: datetime | None = None
     trade_signals = 0
     no_trade_signals = 0
+    neutral_signals = 0
+    pending_neutral: deque[_PendingDecision] = deque()
+    neutral_abs_moves: list[float] = []
 
     for snapshot in replay.run(start=start, end=end):
         snapshots += 1
@@ -194,6 +202,12 @@ def run_backtest(
             decision_returns.append(realized_bps)
             decision_correct.append(realized_bps > 0)
 
+        while pending_neutral and pending_neutral[0].target_time <= snapshot.timestamp:
+            pending = pending_neutral.popleft()
+            if pending.target_time.date() != snapshot.timestamp.date():
+                continue
+            neutral_abs_moves.append(abs(price / pending.start_price - 1.0) * 10_000.0)
+
         for forecast in snapshot.forecasts:
             pending_forecasts[forecast.horizon_minutes].append(
                 _PendingForecast(
@@ -212,6 +226,16 @@ def run_backtest(
                     timestamp=snapshot.timestamp,
                     target_time=snapshot.timestamp + timedelta(minutes=snapshot.decision.primary_horizon),
                     direction=direction,
+                    start_price=price,
+                )
+            )
+        elif snapshot.decision.action == "TRADE_NEUTRAL":
+            neutral_signals += 1
+            pending_neutral.append(
+                _PendingDecision(
+                    timestamp=snapshot.timestamp,
+                    target_time=snapshot.timestamp + timedelta(minutes=snapshot.decision.primary_horizon),
+                    direction=0,
                     start_price=price,
                 )
             )
@@ -268,6 +292,9 @@ def run_backtest(
             positive_underlying_return_rate=_safe_mean(float(value > 0) for value in decision_returns),
             no_trade_signals=no_trade_signals,
             gate_failure_counts=dict(failure_counts.most_common()),
+            neutral_signals=neutral_signals,
+            matured_neutral_signals=len(neutral_abs_moves),
+            avg_abs_move_bps_neutral=_safe_mean(neutral_abs_moves),
         ),
         limitations=(
             "The historical universe uses the supplied point-in-time/current holdings file; older periods can contain survivorship and weight bias unless historical holdings are supplied.",
@@ -328,6 +355,9 @@ def write_report(report: BacktestReport, output: Path | str) -> tuple[Path, Path
             f"- Mean 15m direction-adjusted SPY return: {num(decision.avg_underlying_return_bps, ' bps')}",
             f"- Median 15m direction-adjusted SPY return: {num(decision.median_like_return_bps, ' bps')}",
             f"- Positive direction-adjusted return rate: {pct(decision.positive_underlying_return_rate)}",
+            f"- Neutral premium signals: {decision.neutral_signals:,}"
+            f" (matured {decision.matured_neutral_signals:,},"
+            f" mean |move| {num(decision.avg_abs_move_bps_neutral, ' bps')})",
             f"- NO_TRADE snapshots: {decision.no_trade_signals:,}",
             "",
             "### Most common failed gates",

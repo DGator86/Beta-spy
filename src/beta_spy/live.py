@@ -13,7 +13,7 @@ from websockets.sync.client import connect
 
 from .engine import Tape500Engine
 from .models import EngineSnapshot
-from .options import OptionPlan, plan_debit_spread
+from .options import OptionPlan, plan_best_strategy
 
 TRADIER_API = "https://api.tradier.com/v1"
 TRADIER_WS = "wss://ws.tradier.com/v1/markets/events"
@@ -165,7 +165,7 @@ class TradierMarketStream:
             self.hub.update(timestamp=timestamp.isoformat(), status="WARMING")
             return
         plan: OptionPlan | None = None
-        if snapshot.decision.action == "TRADE":
+        if snapshot.decision.action in {"TRADE", "TRADE_NEUTRAL"}:
             plan = self._option_plan(snapshot)
         self.hub.update(
             timestamp=timestamp.isoformat(),
@@ -210,6 +210,8 @@ class TradierMarketStream:
                     "ask": row.get("ask"),
                     "open_interest": row.get("open_interest") or 0,
                     "delta": greeks.get("delta"),
+                    "gamma": greeks.get("gamma"),
+                    "theta": greeks.get("theta"),
                 }
             )
         primary = next(
@@ -220,20 +222,29 @@ class TradierMarketStream:
             ),
             None,
         )
-        expected_move_dollars: float | None = None
-        probability: float | None = None
         risk_budget = self.maximum_option_risk_dollars * snapshot.decision.risk_multiplier
-        if primary is not None:
-            spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
-            if spy is not None and spy.close > 0:
-                expected_move_dollars = spy.close * abs(primary.expected_return_bps) / 10_000.0
-            probability = max(primary.probability_up, 1.0 - primary.probability_up)
-        return plan_debit_spread(
+        spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
+        spy_price = float(spy.close) if spy is not None and spy.close > 0 else None
+        expected_move_dollars = 0.0
+        if primary is not None and spy_price is not None and snapshot.decision.direction != "NEUTRAL":
+            expected_move_dollars = spy_price * primary.expected_return_bps / 10_000.0
+        try:
+            expiry_close = datetime.strptime(expiration, "%Y-%m-%d").replace(
+                hour=20, minute=0, tzinfo=UTC
+            )
+            minutes_to_expiry = max(
+                (expiry_close - datetime.now(UTC)).total_seconds() / 60.0, 30.0
+            )
+        except ValueError:
+            minutes_to_expiry = 390.0
+        return plan_best_strategy(
             normalized,
             snapshot.decision.direction,
             maximum_risk_dollars=risk_budget,
+            hold_minutes=float(snapshot.decision.primary_horizon),
+            spy_price=spy_price,
             expected_move_dollars=expected_move_dollars,
-            probability=probability,
+            minutes_to_expiry=minutes_to_expiry,
         )
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:
