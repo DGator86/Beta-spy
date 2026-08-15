@@ -12,6 +12,7 @@ from .app import create_app
 from .demo import DemoFeed, demo_holdings
 from .engine import Tape500Engine
 from .historical import AlpacaHistoricalClient, TradierHistoricalClient
+from .ledger import PaperLedger
 from .live import StateHub, TradierMarketStream
 from .backtest import run_backtest, write_report
 from .replay import HistoricalReplay
@@ -38,6 +39,12 @@ def main() -> None:
     run.add_argument("--host", default="127.0.0.1")
     run.add_argument("--port", type=int, default=8790)
     run.add_argument("--risk", type=float, default=100.0)
+    run.add_argument(
+        "--daily-loss-limit",
+        type=float,
+        default=None,
+        help="Stop opening paper positions after this realized daily loss (default: 3x --risk)",
+    )
 
     demo = sub.add_parser("demo", help="Run the dashboard against a deterministic synthetic tape")
     demo.add_argument("--db", default="data/beta-spy-demo.sqlite")
@@ -173,11 +180,18 @@ def main() -> None:
         holdings = _load_holdings(args.universe)
         store = Tape500Store(args.db)
         hub = StateHub()
+        ledger = PaperLedger(
+            store,
+            daily_loss_limit_dollars=(
+                args.daily_loss_limit if args.daily_loss_limit is not None else args.risk * 3.0
+            ),
+        )
         stream = TradierMarketStream(
             token,
             Tape500Engine(holdings, store=store),
             hub,
             maximum_option_risk_dollars=args.risk,
+            ledger=ledger,
         )
         thread = threading.Thread(target=stream.run_forever, daemon=True, name="tradier-tape")
         thread.start()

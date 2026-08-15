@@ -30,6 +30,7 @@ class OptionPlan:
     contracts: int = 1
     total_risk_dollars: float | None = None
     expected_value_dollars: float | None = None
+    hold_minutes: float = 15.0
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -488,6 +489,7 @@ def plan_best_strategy(
                 contracts=contracts,
                 total_risk_dollars=round(max_loss * contracts, 2),
                 expected_value_dollars=round(expected_value * contracts, 2),
+                hold_minutes=hold_minutes,
             )
     return best
 

@@ -12,6 +12,7 @@ from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 from .engine import Tape500Engine
+from .ledger import PaperLedger
 from .models import EngineSnapshot
 from .options import OptionPlan, plan_best_strategy
 
@@ -27,6 +28,7 @@ class StateHub:
             "timestamp": datetime.now(UTC).isoformat(),
             "snapshot": None,
             "option_plan": None,
+            "ledger": None,
             "stream": {"events": 0, "reconnects": 0, "last_error": None},
         }
 
@@ -60,6 +62,7 @@ class TradierMarketStream:
         *,
         snapshot_seconds: float = 60.0,
         maximum_option_risk_dollars: float = 100.0,
+        ledger: PaperLedger | None = None,
     ) -> None:
         self.token = access_token.strip()
         if not self.token:
@@ -68,6 +71,7 @@ class TradierMarketStream:
         self.hub = hub
         self.snapshot_seconds = snapshot_seconds
         self.maximum_option_risk_dollars = maximum_option_risk_dollars
+        self.ledger = ledger
         self._stop = threading.Event()
         self._events = 0
         self._reconnects = 0
@@ -162,17 +166,49 @@ class TradierMarketStream:
     def _publish_snapshot(self, timestamp: datetime) -> None:
         snapshot = self.engine.build_snapshot(timestamp)
         if snapshot is None:
-            self.hub.update(timestamp=timestamp.isoformat(), status="WARMING")
+            # The realized track record stays visible even when the tape is
+            # quiet (weekends, pre-open) and no snapshot can be built.
+            ledger_stats = self.ledger.stats(timestamp) if self.ledger is not None else None
+            self.hub.update(timestamp=timestamp.isoformat(), status="WARMING", ledger=ledger_stats)
             return
         plan: OptionPlan | None = None
         if snapshot.decision.action in {"TRADE", "TRADE_NEUTRAL"}:
             plan = self._option_plan(snapshot)
+        ledger_stats = None
+        if self.ledger is not None:
+            if plan is not None:
+                self.ledger.open_position(plan, timestamp)
+            self._mark_ledger(timestamp)
+            ledger_stats = self.ledger.stats(timestamp)
         self.hub.update(
             timestamp=timestamp.isoformat(),
             snapshot=asdict(snapshot),
             option_plan=asdict(plan) if plan else None,
+            ledger=ledger_stats,
             status="LIVE",
         )
+
+    def _mark_ledger(self, timestamp: datetime) -> None:
+        assert self.ledger is not None
+        symbols = self.ledger.open_symbols()
+        if not symbols:
+            return
+        try:
+            payload = self._get("/markets/quotes", {"symbols": ",".join(symbols), "greeks": "false"})
+        except httpx.HTTPError:
+            # A failed quote fetch only delays the next mark; never let it
+            # take the snapshot loop down.
+            return
+        rows = (payload.get("quotes") or {}).get("quote") or []
+        if isinstance(rows, dict):
+            rows = [rows]
+        quotes: dict[str, tuple[float, float]] = {}
+        for row in rows:
+            symbol = str(row.get("symbol") or "")
+            bid, ask = row.get("bid"), row.get("ask")
+            if symbol and bid is not None and ask is not None:
+                quotes[symbol] = (float(bid), float(ask))
+        self.ledger.mark_positions(quotes, timestamp)
 
     def _option_plan(self, snapshot: EngineSnapshot) -> OptionPlan | None:
         now = time.monotonic()
