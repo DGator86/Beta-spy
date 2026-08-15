@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Beta-spy Google Drive backup daily at 5:30 PM Eastern
+
+[Timer]
+OnCalendar=*-*-* 17:30:00 America/New_York
+Persistent=true
+AccuracySec=1m
+Unit=beta-spy-backup.service
+
+[Install]
+WantedBy=timers.target

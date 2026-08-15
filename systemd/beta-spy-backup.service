@@ -1,0 +1,21 @@
+[Unit]
+Description=Back up Beta-spy data to Google Drive
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+# Reuses the generic alpha-spy-backup snapshot script pointed at the
+# Beta-spy state root; destination paths are namespaced by the root's
+# basename so both systems share one Drive folder without collisions.
+EnvironmentFile=-/etc/alpha-spy/backup.env
+Environment=ALPHA_SPY_STATE_ROOT=/var/lib/beta-spy
+Environment=ALPHA_SPY_BACKUP_LOCK=/run/lock/beta-spy-backup.lock
+ExecStart=/usr/local/sbin/alpha-spy-backup
+Nice=15
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+CPUWeight=20
+IOWeight=20
+TimeoutStartSec=8h

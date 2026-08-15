@@ -1,0 +1,8 @@
+[Unit]
+Description=Health watchdog for Alpha-spy and Beta-spy
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/spy-watchdog
+TimeoutStartSec=5m
