@@ -25,10 +25,15 @@ class DecisionEngine:
         min_covered_weight: float = 0.85,
         max_spy_spread_bps: float = 4.0,
         neutral_premium_enabled: bool = True,
-        neutral_max_edge: float = 0.12,
-        quiet_return_threshold: float = 0.00016,
-        quiet_volatility_threshold: float = 0.25,
+        # Calibrated-probability scale: edges are compressed, so "no edge"
+        # must be much tighter than it was on raw probabilities.
+        neutral_max_edge: float = 0.05,
+        quiet_return_threshold: float = 0.00012,
+        quiet_volatility_threshold: float = 0.20,
         quiet_window_minutes: int = 15,
+        # Reference tape activity for regime sizing; deliberately separate
+        # from the neutral-gate threshold so tuning one does not move the other.
+        regime_reference_return: float = 0.00016,
     ) -> None:
         self.primary_horizon = primary_horizon
         self.min_probability = min_probability
@@ -40,6 +45,7 @@ class DecisionEngine:
         self.quiet_return_threshold = quiet_return_threshold
         self.quiet_volatility_threshold = quiet_volatility_threshold
         self.quiet_window_minutes = quiet_window_minutes
+        self.regime_reference_return = regime_reference_return
         self._recent_returns: deque[float] = deque(maxlen=quiet_window_minutes)
         self._last_session: object = None
 
@@ -147,7 +153,7 @@ class DecisionEngine:
             regime_multiplier = 1.0
             if self._recent_returns:
                 recent_mean = sum(self._recent_returns) / len(self._recent_returns)
-                regime_multiplier = min(max(recent_mean / self.quiet_return_threshold, 0.75), 1.5)
+                regime_multiplier = min(max(recent_mean / self.regime_reference_return, 0.75), 1.5)
             risk_multiplier = float(min(max(edge_multiplier * regime_multiplier, 0.5), 2.5))
             return Decision(
                 timestamp=timestamp,
