@@ -1,6 +1,10 @@
+import json
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 
+import beta_spy.live as live_module
 from beta_spy.ledger import PaperLedger
+from beta_spy.live import StateHub, TradierMarketStream
 from beta_spy.options import OptionLeg, OptionPlan
 from beta_spy.storage import Tape500Store
 
@@ -166,6 +170,36 @@ def test_duplicate_strategy_and_book_limit_refused(tmp_path):
         hold_minutes=15.0,
     )
     assert ledger.open_position(put_plan, NOW) is None
+
+
+def test_alpha_signal_recorded_and_published(tmp_path, monkeypatch):
+    store = Tape500Store(tmp_path / "alpha.sqlite")
+    hub = StateHub()
+    stream = TradierMarketStream(
+        "token",
+        SimpleNamespace(store=store, holdings={}),
+        hub,
+        alpha_state_url="http://127.0.0.1:8787/api/v1/state",
+    )
+    payload = {
+        "market": {"price": 776.34},
+        "decision": {"action": "NO_TRADE", "created_at": "2026-08-15T15:53:59Z"},
+        "forecast_horizons": {
+            "15m": {"probability_up": 0.49, "expected_return": 0.0009, "created_at": "x"}
+        },
+    }
+    monkeypatch.setattr(
+        live_module.httpx,
+        "get",
+        lambda url, timeout: SimpleNamespace(raise_for_status=lambda: None, json=lambda: payload),
+    )
+    record = stream._record_alpha_signal(NOW)
+    assert record is not None
+    assert record["action"] == "NO_TRADE"
+    assert record["horizons"]["15m"]["probability_up"] == 0.49
+    row = store.connection.execute("SELECT payload FROM alpha_signals").fetchone()
+    assert json.loads(row[0])["spy_price"] == 776.34
+    stream.close()
 
 
 def test_daily_loss_breaker_blocks_new_positions(tmp_path):

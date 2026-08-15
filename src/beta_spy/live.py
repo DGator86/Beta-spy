@@ -64,6 +64,7 @@ class TradierMarketStream:
         maximum_option_risk_dollars: float = 100.0,
         ledger: PaperLedger | None = None,
         warmup: Callable[[], None] | None = None,
+        alpha_state_url: str | None = None,
     ) -> None:
         self.token = access_token.strip()
         if not self.token:
@@ -74,6 +75,7 @@ class TradierMarketStream:
         self.maximum_option_risk_dollars = maximum_option_risk_dollars
         self.ledger = ledger
         self.warmup = warmup
+        self.alpha_state_url = (alpha_state_url or "").strip() or None
         self._stop = threading.Event()
         self._events = 0
         self._reconnects = 0
@@ -174,7 +176,50 @@ class TradierMarketStream:
             self._events += 1
         self.hub.patch_stream(events=self._events, last_event_at=datetime.now(UTC).isoformat())
 
+    def _record_alpha_signal(self, timestamp: datetime) -> dict[str, Any] | None:
+        """Sample Alpha-spy's concurrent stance for future agreement analysis.
+
+        Both systems forecast SPY independently; weeks of side-by-side
+        recordings are the prerequisite for validating (via CPCV) whether an
+        agreement gate between them adds edge. Failures are silent: Alpha
+        being down must never affect Beta's own loop.
+        """
+        if self.alpha_state_url is None:
+            return None
+        try:
+            response = httpx.get(self.alpha_state_url, timeout=5.0)
+            response.raise_for_status()
+            state = response.json()
+        except (httpx.HTTPError, ValueError):
+            return None
+        if not isinstance(state, dict):
+            return None
+        market = state.get("market") or {}
+        decision = state.get("decision") or {}
+        horizons = state.get("forecast_horizons") or {}
+        record: dict[str, Any] = {
+            "spy_price": market.get("price"),
+            "action": decision.get("action"),
+            "direction": decision.get("direction") or decision.get("side"),
+            "decision_created_at": decision.get("created_at"),
+            "horizons": {
+                str(name): {
+                    "probability_up": (value or {}).get("probability_up"),
+                    "expected_return": (value or {}).get("expected_return"),
+                    "created_at": (value or {}).get("created_at"),
+                }
+                for name, value in horizons.items()
+                if isinstance(value, dict)
+            },
+        }
+        if self.engine.store is not None:
+            self.engine.store.save_alpha_signal(timestamp, record)
+        return record
+
     def _publish_snapshot(self, timestamp: datetime) -> None:
+        alpha_signal = self._record_alpha_signal(timestamp)
+        if alpha_signal is not None:
+            self.hub.update(alpha_signal={**alpha_signal, "recorded_at": timestamp.isoformat()})
         snapshot = self.engine.build_snapshot(timestamp)
         if snapshot is None:
             # The realized track record stays visible even when the tape is

@@ -51,6 +51,11 @@ def main() -> None:
         default=3,
         help="Replay this many stored sessions at startup so models open warm (0 disables)",
     )
+    run.add_argument(
+        "--alpha-state-url",
+        default=os.environ.get("ALPHA_SPY_STATE_URL", "http://127.0.0.1:8787/api/v1/state"),
+        help="Alpha-spy state endpoint to record side-by-side signals from (empty disables)",
+    )
 
     demo = sub.add_parser("demo", help="Run the dashboard against a deterministic synthetic tape")
     demo.add_argument("--db", default="data/beta-spy-demo.sqlite")
@@ -219,6 +224,7 @@ def main() -> None:
             maximum_option_risk_dollars=args.risk,
             ledger=ledger,
             warmup=_warm_start if args.warm_sessions > 0 else None,
+            alpha_state_url=args.alpha_state_url,
         )
         thread = threading.Thread(target=stream.run_forever, daemon=True, name="tradier-tape")
         thread.start()

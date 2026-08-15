@@ -88,6 +88,10 @@ CREATE TABLE IF NOT EXISTS spy_quotes (
     ask_size REAL,
     PRIMARY KEY (timestamp, bid, ask)
 );
+CREATE TABLE IF NOT EXISTS alpha_signals (
+    timestamp TEXT PRIMARY KEY,
+    payload TEXT NOT NULL
+);
 """
 
 
@@ -225,6 +229,15 @@ class Tape500Store:
                     )
                     for item in forecasts
                 ],
+            )
+            self.connection.commit()
+
+    def save_alpha_signal(self, timestamp: datetime, payload: dict) -> None:
+        """Record Alpha-spy's concurrent stance for future agreement analysis."""
+        with self.lock:
+            self.connection.execute(
+                "INSERT OR REPLACE INTO alpha_signals(timestamp,payload) VALUES(?,?)",
+                (_iso(timestamp), json.dumps(payload, default=str, separators=(",", ":"))),
             )
             self.connection.commit()
 
