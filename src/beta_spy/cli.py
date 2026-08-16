@@ -38,12 +38,29 @@ def main() -> None:
     run.add_argument("--universe")
     run.add_argument("--host", default="127.0.0.1")
     run.add_argument("--port", type=int, default=8790)
-    run.add_argument("--risk", type=float, default=100.0)
+    run.add_argument(
+        "--risk",
+        type=float,
+        default=100.0,
+        help="Fallback fixed per-trade risk in dollars, used only when --bankroll is 0",
+    )
+    run.add_argument(
+        "--risk-fraction",
+        type=float,
+        default=0.15,
+        help="Per-trade risk budget as a fraction of current equity (compounds uncapped)",
+    )
     run.add_argument(
         "--daily-loss-limit",
         type=float,
         default=None,
-        help="Stop opening paper positions after this realized daily loss (default: 3x --risk)",
+        help="Absolute daily loss breaker in dollars (default: --daily-loss-fraction of equity)",
+    )
+    run.add_argument(
+        "--daily-loss-fraction",
+        type=float,
+        default=0.25,
+        help="Daily loss breaker as a fraction of the day's starting equity",
     )
     run.add_argument(
         "--warm-sessions",
@@ -55,7 +72,7 @@ def main() -> None:
         "--bankroll",
         type=float,
         default=10_000.0,
-        help="Paper starting equity; risk compounds with realized P&L relative to it (0 disables)",
+        help="Paper starting equity; per-trade risk is --risk-fraction of it and compounds (0 disables)",
     )
     run.add_argument(
         "--alpha-state-url",
@@ -200,10 +217,10 @@ def main() -> None:
         engine = Tape500Engine(holdings, store=store)
         ledger = PaperLedger(
             store,
-            daily_loss_limit_dollars=(
-                args.daily_loss_limit if args.daily_loss_limit is not None else args.risk * 3.0
-            ),
+            daily_loss_limit_dollars=args.daily_loss_limit,
+            daily_loss_fraction=args.daily_loss_fraction,
             starting_equity=args.bankroll if args.bankroll > 0 else None,
+            risk_fraction_per_trade=args.risk_fraction,
         )
 
         def _warm_start() -> None:

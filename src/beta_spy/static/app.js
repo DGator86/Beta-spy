@@ -33,7 +33,10 @@ function render(state){
     setText('ledgerWinRate',lg.closed_count?`${pct(lg.win_rate)} of ${lg.closed_count}`:'—')
     setText('ledgerOpen',String(lg.open_count||0))
     setText('ledgerUnrealized',`$${num(lg.unrealized_pnl_dollars,2)}`);tone($('ledgerUnrealized'),lg.unrealized_pnl_dollars)
-    setText('ledgerBreaker',lg.breaker_tripped?'TRIPPED — no new trades today':'ARMED');tone($('ledgerBreaker'),lg.breaker_tripped?-1:1)
+    setText('ledgerBreaker',lg.breaker_tripped?'TRIPPED — no new trades today':`ARMED (-$${num(lg.daily_loss_limit_dollars,0)})`);tone($('ledgerBreaker'),lg.breaker_tripped?-1:1)
+    setText('ledgerEquity',lg.equity!=null?`$${num(lg.equity,2)}`:'—')
+    setText('ledgerBudget',lg.risk_budget_dollars!=null?`$${num(lg.risk_budget_dollars,2)}`:'—')
+    setText('ledgerStreak',lg.loss_streak?`${lg.loss_streak} in a row${lg.loss_streak>=3?' — budget halved':''}`:'0');tone($('ledgerStreak'),lg.loss_streak>=3?-1:0)
     const lt=$('ledgerRows');lt.innerHTML=''
     ;(lg.open_positions||[]).forEach(p=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${p.strategy}</td><td>${p.direction}</td><td>OPEN ×${p.contracts}</td><td class="${(p.unrealized_pnl_dollars||0)>=0?'pos':'neg'}">$${num(p.unrealized_pnl_dollars,2)}</td><td>—</td><td>${(p.opened_at||'').slice(11,19)}</td>`;lt.appendChild(tr)})
     ;(lg.recent_closed||[]).forEach(p=>{const tr=document.createElement('tr');tr.innerHTML=`<td>${p.strategy}</td><td>${p.direction}</td><td>CLOSED</td><td class="${(p.realized_pnl_dollars||0)>=0?'pos':'neg'}">$${num(p.realized_pnl_dollars,2)}</td><td>${p.exit_reason||'—'}</td><td>${(p.closed_at||'').slice(11,19)}</td>`;lt.appendChild(tr)})

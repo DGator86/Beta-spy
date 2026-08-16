@@ -239,9 +239,11 @@ def test_daily_loss_breaker_blocks_new_positions(tmp_path):
     assert ledger.open_position(_condor_plan(), next_day) is not None
 
 
-def test_size_multiplier_compounds_and_throttles(tmp_path):
+def test_risk_budget_compounds_and_throttles(tmp_path):
     ledger = _ledger(tmp_path, starting_equity=1000.0, daily_loss_limit_dollars=10_000.0)
-    assert ledger.size_multiplier(NOW) == 1.0
+    # Fresh $1,000 account: 15% per trade, 25% single-trade ceiling.
+    assert ledger.risk_budget_dollars(NOW) == 150.0
+    assert ledger.max_trade_risk_dollars() == 250.0
     with ledger.store.lock:
         # A banked win raises equity and therefore size.
         ledger.store.connection.execute(
@@ -258,8 +260,11 @@ def test_size_multiplier_compounds_and_throttles(tmp_path):
             ),
         )
         ledger.store.connection.commit()
-    assert ledger.size_multiplier(NOW) == 1.5
-    # Three consecutive losses today halve the multiplier.
+    # Equity is now $1,500: the dollar budget compounds proportionally.
+    assert ledger.equity_dollars() == 1500.0
+    assert ledger.risk_budget_dollars(NOW) == 225.0
+    assert ledger.max_trade_risk_dollars() == 375.0
+    # Three consecutive losses today halve the budget.
     with ledger.store.lock:
         for index in range(3):
             ledger.store.connection.execute(
@@ -278,8 +283,36 @@ def test_size_multiplier_compounds_and_throttles(tmp_path):
             )
         ledger.store.connection.commit()
     assert ledger.consecutive_losses_today(NOW) == 3
-    expected = min((1000.0 + 500.0 - 30.0) / 1000.0, 3.0) * 0.5
-    assert ledger.size_multiplier(NOW) == expected
+    equity = 1000.0 + 500.0 - 30.0
+    assert ledger.risk_budget_dollars(NOW) == equity * 0.15 * 0.5
+
+
+def test_fractional_daily_breaker_scales_with_equity(tmp_path):
+    # No absolute limit: the breaker is 25% of the day's starting equity.
+    ledger = _ledger(tmp_path, starting_equity=1000.0, daily_loss_fraction=0.25)
+    assert ledger.daily_loss_limit_now(NOW) == 250.0
+    assert not ledger.breaker_tripped(NOW)
+    with ledger.store.lock:
+        ledger.store.connection.execute(
+            """
+            INSERT INTO paper_positions(
+                opened_at,strategy,direction,expiration,contracts,entry_price,is_credit,
+                max_loss_dollars,max_profit_dollars,hold_minutes,legs,status,closed_at,
+                realized_pnl_dollars
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "2026-08-17T14:00:00Z", "CALL_DEBIT_SPREAD", "BULLISH", "2026-08-17",
+                1, 1.0, 0, 100.0, 400.0, 15.0, "[]", "CLOSED",
+                "2026-08-17T14:10:00Z", -250.0,
+            ),
+        )
+        ledger.store.connection.commit()
+    # Day-start equity is still $1,000 (the loss happened today), so the
+    # $250 realized loss trips the 25% breaker exactly.
+    assert ledger.day_start_equity_dollars(NOW) == 1000.0
+    assert ledger.breaker_tripped(NOW)
+    assert ledger.open_position(_condor_plan(), NOW) is None
 
 
 def test_alpha_signal_recorded_and_published(tmp_path, monkeypatch):

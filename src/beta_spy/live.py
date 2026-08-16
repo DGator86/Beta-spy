@@ -323,11 +323,21 @@ class TradierMarketStream:
             ),
             None,
         )
-        risk_budget = self.maximum_option_risk_dollars * snapshot.decision.risk_multiplier
+        # Equity-proportional sizing: the budget is a fraction of current
+        # bankroll (so it compounds without a cap), scaled by the decision
+        # layer's confidence multiplier and hard-bounded so no single trade
+        # can exceed the max fraction of equity. Falls back to the fixed
+        # dollar budget when no bankroll is configured.
+        base_budget = None
         if self.ledger is not None:
-            # Bankroll compounding and loss-streak throttle: winners raise
-            # the budget, losing streaks cut it, the daily breaker stops it.
-            risk_budget *= self.ledger.size_multiplier(datetime.now(UTC))
+            base_budget = self.ledger.risk_budget_dollars(datetime.now(UTC))
+        if base_budget is None:
+            base_budget = self.maximum_option_risk_dollars
+        risk_budget = base_budget * snapshot.decision.risk_multiplier
+        if self.ledger is not None:
+            ceiling = self.ledger.max_trade_risk_dollars()
+            if ceiling is not None:
+                risk_budget = min(risk_budget, ceiling)
         spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
         spy_price = float(spy.close) if spy is not None and spy.close > 0 else None
         expected_move_dollars = 0.0

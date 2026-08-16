@@ -58,7 +58,7 @@
       <label>Total realized</label><b id="betaTotalPnl">—</b>
       <label>Win rate</label><b id="betaWinRate">—</b>
       <label>Open positions</label><b id="betaOpen">—</b>
-      <label>Size multiplier</label><b id="betaSizeMult">—</b>
+      <label>Risk budget / trade</label><b id="betaSizeMult">—</b>
       <label>Loss breaker</label><b id="betaBreaker">—</b>
     </div>
     <table id="betaPositions" style="display:none">
@@ -130,7 +130,7 @@ async function refreshBeta(){
       $('betaTotalPnl').textContent=money(l.realized_pnl_dollars);tone($('betaTotalPnl'),l.realized_pnl_dollars);
       $('betaWinRate').textContent=l.closed_count?Math.round(l.win_rate*100)+'% of '+l.closed_count:'no closed trades yet';
       $('betaOpen').textContent=l.open_count||0;
-      $('betaSizeMult').textContent=(l.size_multiplier??1).toFixed(2)+'×';
+      $('betaSizeMult').textContent=l.risk_budget_dollars!=null?money(l.risk_budget_dollars):'—';
       $('betaBreaker').textContent=l.breaker_tripped?'TRIPPED':'armed';tone($('betaBreaker'),l.breaker_tripped?-1:1);
       const rows=(l.open_positions||[]).map(p=>`<tr><td>${p.strategy}</td><td>${p.direction}</td><td>${p.status}×${p.contracts}</td><td class="${(p.unrealized_pnl_dollars||0)>=0?'pos':'neg'}">${money(p.unrealized_pnl_dollars)}</td></tr>`)
         .concat((l.recent_closed||[]).slice(0,4).map(p=>`<tr class="dim"><td>${p.strategy}</td><td>${p.direction}</td><td>${p.exit_reason||'CLOSED'}</td><td class="${(p.realized_pnl_dollars||0)>=0?'pos':'neg'}">${money(p.realized_pnl_dollars)}</td></tr>`));

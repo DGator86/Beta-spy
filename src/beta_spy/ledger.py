@@ -20,12 +20,17 @@ Exits are managed:
   otherwise closed at their forecast horizon (the EV model prices the plan
   over that hold, so letting it run past the horizon is unmodelled risk).
 
-Sizing feedback:
-- A daily circuit breaker refuses new positions once the day's realized loss
-  exceeds the configured limit.
-- ``size_multiplier`` compounds the risk budget with the bankroll (realized
-  P&L relative to starting equity, clipped) and halves it after three
-  consecutive losing trades in a day.
+Sizing feedback (equity-proportional, so the account can compound):
+- ``risk_budget_dollars`` is a fixed fraction of *current* equity. Winners
+  grow equity and therefore the budget with no upper cap — a $1,000 account
+  that compounds to $100,000 risks 100x more dollars per trade at the same
+  fraction. Three consecutive losing trades in a day halve the budget until
+  a winner resets the streak.
+- ``max_trade_risk_dollars`` bounds what the decision layer's confidence
+  multiplier can push a single trade to (a larger fraction of equity).
+- The daily circuit breaker refuses new positions once the day's realized
+  loss exceeds a fraction of the day's starting equity (or an absolute
+  dollar limit when one is configured explicitly).
 """
 
 from __future__ import annotations
@@ -91,7 +96,8 @@ class PaperLedger:
         self,
         store: Tape500Store,
         *,
-        daily_loss_limit_dollars: float = 300.0,
+        daily_loss_limit_dollars: float | None = None,
+        daily_loss_fraction: float = 0.25,
         max_open_positions: int = 3,
         credit_take_profit_fraction: float = 0.5,
         credit_stop_loss_multiple: float = 2.0,
@@ -100,11 +106,15 @@ class PaperLedger:
         expiry_buffer_minutes: float = 10.0,
         patience_seconds: float = 90.0,
         starting_equity: float | None = 10_000.0,
-        bankroll_multiplier_cap: float = 3.0,
+        risk_fraction_per_trade: float = 0.15,
+        max_trade_risk_fraction: float = 0.25,
         loss_streak_trigger: int = 3,
     ) -> None:
         self.store = store
-        self.daily_loss_limit_dollars = float(daily_loss_limit_dollars)
+        self.daily_loss_limit_dollars = (
+            float(daily_loss_limit_dollars) if daily_loss_limit_dollars else None
+        )
+        self.daily_loss_fraction = float(daily_loss_fraction)
         self.max_open_positions = int(max_open_positions)
         self.credit_take_profit_fraction = float(credit_take_profit_fraction)
         self.credit_stop_loss_multiple = float(credit_stop_loss_multiple)
@@ -113,7 +123,8 @@ class PaperLedger:
         self.expiry_buffer_minutes = float(expiry_buffer_minutes)
         self.patience_seconds = float(patience_seconds)
         self.starting_equity = float(starting_equity) if starting_equity else None
-        self.bankroll_multiplier_cap = float(bankroll_multiplier_cap)
+        self.risk_fraction_per_trade = float(risk_fraction_per_trade)
+        self.max_trade_risk_fraction = float(max_trade_risk_fraction)
         self.loss_streak_trigger = int(loss_streak_trigger)
         with self.store.lock:
             self.store.connection.executescript(LEDGER_SCHEMA)
@@ -424,8 +435,27 @@ class PaperLedger:
             ).fetchone()
         return float(row[0] or 0.0)
 
+    def equity_dollars(self) -> float | None:
+        if self.starting_equity is None:
+            return None
+        return self.starting_equity + self.total_realized_dollars()
+
+    def day_start_equity_dollars(self, now: datetime) -> float | None:
+        """Equity at the start of the trading day: current minus today's realized."""
+        if self.starting_equity is None:
+            return None
+        return self.starting_equity + self.total_realized_dollars() - self.day_realized_dollars(now)
+
+    def daily_loss_limit_now(self, now: datetime) -> float:
+        if self.daily_loss_limit_dollars is not None:
+            return self.daily_loss_limit_dollars
+        day_start = self.day_start_equity_dollars(now)
+        if day_start is None:
+            return 300.0
+        return max(self.daily_loss_fraction * max(day_start, 0.0), 0.0)
+
     def breaker_tripped(self, now: datetime) -> bool:
-        return self.day_realized_dollars(now) <= -abs(self.daily_loss_limit_dollars)
+        return self.day_realized_dollars(now) <= -abs(self.daily_loss_limit_now(now))
 
     def consecutive_losses_today(self, now: datetime) -> int:
         day = now.astimezone(UTC).date().isoformat()
@@ -446,20 +476,28 @@ class PaperLedger:
                 break
         return streak
 
-    def size_multiplier(self, now: datetime) -> float:
-        """Compound the risk budget with the bankroll; throttle loss streaks.
+    def risk_budget_dollars(self, now: datetime) -> float | None:
+        """Per-trade risk budget as a fraction of current equity.
 
-        Winners raise equity and therefore size (clipped so one hot week
-        cannot triple exposure overnight); three consecutive losing trades in
-        a day halve size for the next entry until a winner resets the streak.
+        Uncapped compounding: equity growth raises the dollar budget in
+        proportion, which is what lets a small account scale. Three
+        consecutive losing trades in a day halve the budget until a winner
+        resets the streak. Returns None when no bankroll is configured.
         """
-        multiplier = 1.0
-        if self.starting_equity:
-            equity = self.starting_equity + self.total_realized_dollars()
-            multiplier *= min(max(equity / self.starting_equity, 0.5), self.bankroll_multiplier_cap)
+        equity = self.equity_dollars()
+        if equity is None:
+            return None
+        budget = max(equity, 0.0) * self.risk_fraction_per_trade
         if self.consecutive_losses_today(now) >= self.loss_streak_trigger:
-            multiplier *= 0.5
-        return float(multiplier)
+            budget *= 0.5
+        return float(budget)
+
+    def max_trade_risk_dollars(self) -> float | None:
+        """Hard ceiling for one trade after confidence multipliers."""
+        equity = self.equity_dollars()
+        if equity is None:
+            return None
+        return max(equity, 0.0) * self.max_trade_risk_fraction
 
     def stats(self, now: datetime) -> dict[str, Any]:
         with self.store.lock:
@@ -507,8 +545,12 @@ class PaperLedger:
                 sum(float(row["unrealized_pnl_dollars"] or 0.0) for row in working), 2
             ),
             "breaker_tripped": self.breaker_tripped(now),
-            "daily_loss_limit_dollars": self.daily_loss_limit_dollars,
-            "size_multiplier": round(self.size_multiplier(now), 3),
+            "daily_loss_limit_dollars": round(self.daily_loss_limit_now(now), 2),
+            "risk_budget_dollars": (
+                round(budget, 2) if (budget := self.risk_budget_dollars(now)) is not None else None
+            ),
+            "risk_fraction_per_trade": self.risk_fraction_per_trade,
+            "loss_streak": self.consecutive_losses_today(now),
             "equity": (
                 round(self.starting_equity + realized, 2) if self.starting_equity else None
             ),
