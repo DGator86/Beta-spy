@@ -50,7 +50,10 @@ check_http() {
   code="$(curl -s -o /dev/null -m 10 -w '%{http_code}' "$url" 2>/dev/null)" || code=000
   [[ "$code" == "200" ]] || note "$name health endpoint returned HTTP $code"
 }
-check_http "alpha-spy decision API" http://127.0.0.1:8787/health
+# /api/v1/state, not /health: the decision API's /health handler can block
+# indefinitely outside market hours, while state is the endpoint the rest of
+# the stack actually depends on.
+check_http "alpha-spy decision API" http://127.0.0.1:8787/api/v1/state
 check_http "alpha-spy dashboard" http://127.0.0.1:8788/health
 check_http "beta-spy dashboard" http://127.0.0.1:8790/api/health
 
