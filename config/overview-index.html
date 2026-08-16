@@ -41,7 +41,7 @@
   .services{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:5px;margin-top:4px}
   .svc{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
   pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:10.5px;color:var(--dim);overflow-x:auto;margin-top:8px;white-space:pre-wrap}
-  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px}
+  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;display:block;overflow-x:auto}
   th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
   th{color:var(--dim);font-weight:500;font-size:11px}
   td:last-child,th:last-child{text-align:right}
@@ -117,6 +117,21 @@
       <label>Risk budget / trade</label><b id="ledgerBudget">—</b>
       <label>Loss streak · breaker</label><b id="ledgerRisk">—</b>
     </div>
+  </section>
+
+  <section class="card">
+    <h2>Scoreboard — do they work? <span class="dim">15m calls vs real SPY tape</span></h2>
+    <table>
+      <thead><tr><th></th><th>Graded</th><th>Hit rate</th><th>Decisive</th><th>Avg bps</th></tr></thead>
+      <tbody>
+        <tr><td><b>Beta trades</b> <span class="dim">(after gates)</span></td><td id="sbGatedN">—</td><td id="sbGatedAcc">—</td><td id="sbGatedDec">—</td><td id="sbGatedBps">—</td></tr>
+        <tr class="dim"><td>Beta raw model</td><td id="sbBetaN">—</td><td id="sbBetaAcc">—</td><td id="sbBetaDec">—</td><td id="sbBetaBps">—</td></tr>
+        <tr><td><b>Alpha-spy</b></td><td id="sbAlphaN">—</td><td id="sbAlphaAcc">—</td><td id="sbAlphaDec">—</td><td id="sbAlphaBps">—</td></tr>
+      </tbody>
+    </table>
+    <div class="chartlbl" style="margin-top:6px"><span>Beta trades by day</span><span id="sbGatedDays" style="text-align:right">—</span></div>
+    <div class="chartlbl"><span>Alpha by day</span><span id="sbAlphaDays" style="text-align:right">—</span></div>
+    <div class="chartlbl" style="margin-top:4px"><span class="dim">Every fresh 15-minute call is graded against what SPY actually did 15 minutes later. "Beta trades" = only signals that passed all gates — the ones the ledger acts on. The raw model runs near a coin flip by design; the gates concentrate the edge. Alpha grading starts from its first recorded live session.</span></div>
   </section>
 
   <section class="card">
@@ -331,6 +346,23 @@ async function refreshOps(){
       $('btGates').textContent=Object.entries(g).sort((x,y)=>y[1]-x[1]).slice(0,2).map(([k,v])=>`${GATE_NAMES[k]||k} ${v}`).join(' · ')||'—';
     }
     if((s.cpcv_verdict||[]).length)$('cpcv').textContent=s.cpcv_verdict.join('\n');
+    const sb=s.scoreboard||{};
+    for(const [sys,prefix] of [['beta_gated','sbGated'],['beta','sbBeta'],['alpha','sbAlpha']]){
+      const g=sb[sys];
+      const days=$(prefix+'Days');
+      if(!g||!g.graded){
+        $(prefix+'N').textContent='0';
+        $(prefix+'Acc').textContent=sys==='alpha'?'collecting…':'—';
+        $(prefix+'Dec').textContent='—';$(prefix+'Bps').textContent='—';
+        if(days)days.textContent=sys==='alpha'?'first graded session starts at the next open':'—';
+        continue;
+      }
+      $(prefix+'N').textContent=g.graded;
+      const acc=$(prefix+'Acc');acc.textContent=pct(g.accuracy);tone(acc,(g.accuracy??0.5)-0.5);
+      $(prefix+'Dec').textContent=g.decisive?`${pct(g.decisive_accuracy)} of ${g.decisive}`:'all decisive';
+      const bps=$(prefix+'Bps');bps.textContent=g.avg_captured_bps!=null?g.avg_captured_bps.toFixed(2):'—';tone(bps,g.avg_captured_bps);
+      if(days)days.textContent=(g.daily||[]).map(d=>`${d.date.slice(5)} ${Math.round(d.accuracy*100)}% (${d.n})`).join(' · ')||'—';
+    }
   }catch(e){badge($('opsBadge'),'OPS STATUS UNAVAILABLE',false)}
 }
 

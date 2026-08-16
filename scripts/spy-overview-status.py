@@ -100,6 +100,126 @@ def _ledger_history() -> dict:
     return out
 
 
+def _grade(
+    calls: list[tuple[str, float]],
+    closes: dict[str, float],
+    horizon_minutes: int = 15,
+    deadband: float = 0.02,
+) -> dict:
+    """Grade (minute_timestamp, probability_up) calls against realized SPY moves.
+
+    A call is graded when the entry and exit minute both exist on the tape and
+    the tape actually moved. "Decisive" restricts to calls with conviction
+    beyond the deadband — the calls a trader would actually act on.
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    graded = decisive = correct = decisive_correct = 0
+    captured_bps = 0.0
+    by_day: dict[str, list[int]] = {}
+    for minute, probability in calls:
+        entry = closes.get(minute)
+        try:
+            exit_minute = (
+                _dt.fromisoformat(minute.replace("Z", "+00:00")) + _td(minutes=horizon_minutes)
+            ).strftime("%Y-%m-%dT%H:%M:00Z")
+        except ValueError:
+            continue
+        exit_price = closes.get(exit_minute)
+        if entry is None or exit_price is None or probability is None:
+            continue
+        move = exit_price - entry
+        if move == 0.0 or probability == 0.5:
+            continue
+        direction = 1 if probability > 0.5 else -1
+        hit = (move > 0) == (direction > 0)
+        graded += 1
+        correct += int(hit)
+        captured_bps += direction * (move / entry) * 10_000.0
+        day = minute[:10]
+        by_day.setdefault(day, [0, 0])
+        by_day[day][0] += int(hit)
+        by_day[day][1] += 1
+        if abs(probability - 0.5) >= deadband:
+            decisive += 1
+            decisive_correct += int(hit)
+    return {
+        "graded": graded,
+        "accuracy": round(correct / graded, 4) if graded else None,
+        "decisive": decisive,
+        "decisive_accuracy": round(decisive_correct / decisive, 4) if decisive else None,
+        "avg_captured_bps": round(captured_bps / graded, 3) if graded else None,
+        "daily": [
+            {"date": day, "accuracy": round(hits / total, 3), "n": total}
+            for day, (hits, total) in sorted(by_day.items())[-7:]
+        ],
+    }
+
+
+def _scoreboard() -> dict:
+    """Head-to-head: Alpha's and Beta's 15m calls graded on the same SPY tape."""
+    out: dict = {"beta": None, "alpha": None, "horizon_minutes": 15}
+    try:
+        con = sqlite3.connect(f"file:{BETA_DB}?mode=ro", uri=True, timeout=5)
+    except sqlite3.Error:
+        return out
+    try:
+        # Keys are floored to the minute in the same shape _grade produces.
+        closes = {
+            str(ts)[:17] + "00Z": float(close)
+            for ts, close in con.execute(
+                "SELECT timestamp, close FROM minute_bars WHERE symbol='SPY'"
+            )
+        }
+        beta_calls = [
+            (str(ts)[:17] + "00Z", float(p))
+            for ts, p in con.execute(
+                "SELECT timestamp, probability_up FROM forecasts "
+                "WHERE horizon_minutes=15 AND model_ready=1"
+            )
+        ]
+        out["beta"] = _grade(beta_calls, closes)
+        # The number that matters: only the decisions that survived every
+        # gate. The raw model hovers near a coin flip by design; the gate
+        # stack is where the edge is concentrated.
+        gated_calls: list[tuple[str, float]] = []
+        for ts, payload in con.execute("SELECT timestamp, payload FROM decisions"):
+            try:
+                record = json.loads(payload)
+            except json.JSONDecodeError:
+                continue
+            if record.get("action") != "TRADE":
+                continue
+            direction = str(record.get("direction") or "")
+            if direction not in ("BULLISH", "BEARISH"):
+                continue
+            minute = str(ts).replace(" ", "T")[:17] + "00Z"
+            gated_calls.append((minute, 1.0 if direction == "BULLISH" else 0.0))
+        out["beta_gated"] = _grade(gated_calls, closes)
+        alpha_calls: list[tuple[str, float]] = []
+        seen: set[str] = set()
+        for ts, payload in con.execute("SELECT timestamp, payload FROM alpha_signals"):
+            try:
+                record = json.loads(payload)
+                horizon = (record.get("horizons") or {}).get("15m") or {}
+                created = str(horizon.get("created_at") or "")
+                probability = horizon.get("probability_up")
+            except (json.JSONDecodeError, AttributeError):
+                continue
+            # A stale forecast repeats its created_at; grade each fresh
+            # forecast once, at the minute it was first recorded.
+            if probability is None or created in seen:
+                continue
+            seen.add(created)
+            alpha_calls.append((str(ts)[:17] + "00Z", float(probability)))
+        out["alpha"] = _grade(alpha_calls, closes)
+    except sqlite3.Error:
+        pass
+    finally:
+        con.close()
+    return out
+
+
 def _backtest_summary() -> dict | None:
     # Newest by mtime, not name: "backtest-robust.json" must not permanently
     # shadow the nightly date-stamped reports.
@@ -176,6 +296,7 @@ def main() -> None:
         "watchdog_tail": watchdog_tail,
         "backtest": _backtest_summary(),
         "cpcv_verdict": _cpcv_verdict(),
+        "scoreboard": _scoreboard(),
         "disk_free_gb": round(disk.free / 1e9, 1),
         "memory_available_mb": memory.get("MemAvailable"),
         "memory_total_mb": memory.get("MemTotal"),
