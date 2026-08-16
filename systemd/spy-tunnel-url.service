@@ -1,0 +1,8 @@
+[Unit]
+Description=Publish the current SPY overview tunnel URL
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/local/sbin/spy-tunnel-url
+TimeoutStartSec=5m

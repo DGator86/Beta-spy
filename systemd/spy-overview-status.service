@@ -1,0 +1,8 @@
+[Unit]
+Description=Write ops status.json for the SPY trading overview page
+
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 /usr/local/sbin/spy-overview-status
+TimeoutStartSec=1m

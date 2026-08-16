@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh the SPY trading overview status.json every minute
+
+[Timer]
+OnCalendar=*:*:00
+AccuracySec=5s
+Persistent=false
+Unit=spy-overview-status.service
+
+[Install]
+WantedBy=timers.target

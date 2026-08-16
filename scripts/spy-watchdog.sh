@@ -30,7 +30,7 @@ log() { printf '%s %s\n' "$(date -Is)" "$*" >>"$LOG"; }
 UNITS=(
   alpha-spy-market alpha-spy-engine alpha-spy-decision
   alpha-spy-confirmation alpha-spy-settlement alpha-spy-dashboard
-  beta-spy
+  beta-spy nginx
 )
 for unit in "${UNITS[@]}"; do
   if ! systemctl is-active --quiet "$unit"; then

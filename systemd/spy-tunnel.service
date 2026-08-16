@@ -1,0 +1,15 @@
+[Unit]
+Description=Cloudflare quick tunnel exposing the SPY trading overview
+After=network-online.target nginx.service
+Wants=network-online.target
+
+[Service]
+# Quick tunnel: outbound-only, so it works even though the provider firewall
+# drops all inbound ports except SSH. The public URL is random and changes on
+# restart; spy-tunnel-url.timer publishes the current one to Google Drive.
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --url http://127.0.0.1:80
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
