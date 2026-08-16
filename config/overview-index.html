@@ -181,7 +181,7 @@ const ago=iso=>{if(!iso)return '—';const s=(Date.now()-new Date(iso))/1000;ret
 const when=iso=>{if(!iso||iso==='unknown')return '—';const d=new Date(iso);return isNaN(d)?iso:d.toLocaleString(undefined,{weekday:'short',hour:'2-digit',minute:'2-digit'})};
 async function pull(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
 
-const GATE_NAMES={coverage:'coverage',covered_weight:'weight cover',directional_edge:'edge',multi_horizon:'horizons',breadth_confirmation:'breadth',flow_confirmation:'flow',spy_liquidity:'liquidity',session_window:'session'};
+const GATE_NAMES={coverage:'coverage',covered_weight:'weight cover',directional_edge:'edge',multi_horizon:'horizons',forecast_magnitude:'magnitude',breadth_confirmation:'breadth',flow_confirmation:'flow',spy_liquidity:'liquidity',session_window:'session'};
 
 function sessionInfo(){
   const now=new Date();

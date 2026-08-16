@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -261,6 +262,56 @@ def test_planner_sells_iron_condor_on_neutral_quiet_signal():
     assert {leg.right for leg in sells} == {"C", "P"}
     assert plan.max_loss_dollars <= 400 + 1e-6
     assert plan.expected_value_dollars is not None and plan.expected_value_dollars > 0
+
+
+def test_high_conviction_gates_require_agreement_magnitude_and_breadth():
+    from beta_spy.decision import DecisionEngine
+    from beta_spy.models import HorizonForecast, MarketFactors
+
+    engine = DecisionEngine()
+    ts = datetime(2026, 8, 10, 15, 0, tzinfo=UTC)  # 11:00 ET, open window
+
+    def forecasts(prob: float, conf: float, exp_bps: float):
+        return tuple(
+            HorizonForecast(horizon_minutes=h, probability_up=prob, expected_return_bps=exp_bps,
+                            confidence=conf, model_ready=True, sample_count=500)
+            for h in (5, 15, 30)
+        )
+
+    def factors(trend: float = 0.6):
+        return MarketFactors(
+            timestamp=ts, symbol_count=500, expected_symbol_count=500,
+            coverage_ratio=0.99, covered_weight=0.99,
+            trend_ew=trend, trend_weighted=trend, momentum_ew=trend,
+            momentum_weighted=trend, volume_ew=0.0, volume_weighted=0.0,
+            flow_ew=trend, flow_weighted=trend, volatility_ew=0.10,
+            volatility_weighted=0.10, pct_above_vwap=0.8, pct_ema_bullish=0.8,
+            pct_positive_5m=0.8, pct_buy_flow=0.8, participation=trend,
+            concentration=0.1, breadth_acceleration=0.0, spy_return_1m=0.0002,
+            spy_return_5m=0.001, spy_vwap_distance_bps=2.0, spy_flow=trend,
+            spy_quote_imbalance=0.2, spy_spread_bps=1.0,
+        )
+
+    # Everything aligned with conviction: trade.
+    decision = engine.decide(ts, factors(), forecasts(0.66, 0.5, 8.0))
+    assert decision.action == "TRADE"
+
+    # Forecast move too small to clear option friction: gated.
+    decision = engine.decide(ts, factors(), forecasts(0.66, 0.5, 4.0))
+    assert decision.action == "NO_TRADE"
+    assert decision.gates["forecast_magnitude"] is False
+
+    # Horizons agree but without conviction: gated.
+    decision = engine.decide(ts, factors(), forecasts(0.66, 0.2, 8.0))
+    assert decision.action == "NO_TRADE"
+    assert decision.gates["multi_horizon"] is False
+
+    # Two breadth dissenters break the supermajority: gated.
+    dissent = factors()
+    dissent = replace(dissent, trend_ew=-0.6, momentum_ew=-0.6)
+    decision = engine.decide(ts, dissent, forecasts(0.66, 0.5, 8.0))
+    assert decision.action == "NO_TRADE"
+    assert decision.gates["breadth_confirmation"] is False
 
 
 def test_neutral_trade_requires_quiet_tape_not_just_model_neutrality():

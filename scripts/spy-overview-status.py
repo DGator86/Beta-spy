@@ -182,8 +182,15 @@ def _scoreboard() -> dict:
         # The number that matters: only the decisions that survived every
         # gate. The raw model hovers near a coin flip by design; the gate
         # stack is where the edge is concentrated.
+        # Gate configs change; grading mixed eras would blur what the current
+        # gates actually do. A marker file written at deploy time scopes the
+        # gated-trade grade to the live configuration only.
+        era_file = Path("/var/lib/beta-spy/gates-era.txt")
+        gates_era = era_file.read_text().strip() if era_file.exists() else ""
         gated_calls: list[tuple[str, float]] = []
         for ts, payload in con.execute("SELECT timestamp, payload FROM decisions"):
+            if gates_era and str(ts).replace(" ", "T") < gates_era:
+                continue
             try:
                 record = json.loads(payload)
             except json.JSONDecodeError:
