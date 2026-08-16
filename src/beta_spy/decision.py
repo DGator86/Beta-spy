@@ -2,8 +2,18 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from .models import Decision, HorizonForecast, MarketFactors
+
+_EASTERN = ZoneInfo("America/New_York")
+
+# Session windows (minutes from the 9:30 ET open) where directional trades
+# are blocked. Chosen by CPCV time-of-day analysis: the lunch reversal window
+# was negative in 100% of 70 day-block partitions (-3.4 bps per trade), the
+# 14:30 window in 76%, and the final half hour in 70% (where 0DTE gamma also
+# makes exits unreliable). The strong 11:00-13:00 stretch stays open.
+BLOCKED_WINDOWS_FROM_OPEN = ((150, 180), (300, 330), (360, 390))
 
 
 def _sign(value: float | None, deadband: float = 0.05) -> int:
@@ -35,6 +45,7 @@ class DecisionEngine:
         # Reference tape activity for regime sizing; deliberately separate
         # from the neutral-gate threshold so tuning one does not move the other.
         regime_reference_return: float = 0.00016,
+        blocked_windows_from_open: tuple[tuple[int, int], ...] = BLOCKED_WINDOWS_FROM_OPEN,
     ) -> None:
         self.primary_horizon = primary_horizon
         self.min_probability = min_probability
@@ -47,8 +58,16 @@ class DecisionEngine:
         self.quiet_volatility_threshold = quiet_volatility_threshold
         self.quiet_window_minutes = quiet_window_minutes
         self.regime_reference_return = regime_reference_return
+        self.blocked_windows_from_open = tuple(blocked_windows_from_open)
         self._recent_returns: deque[float] = deque(maxlen=quiet_window_minutes)
         self._last_session: object = None
+
+    def _session_window_open(self, timestamp: datetime) -> bool:
+        if not self.blocked_windows_from_open:
+            return True
+        eastern = timestamp.astimezone(_EASTERN)
+        from_open = (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+        return not any(start <= from_open < end for start, end in self.blocked_windows_from_open)
 
     def decide(
         self,
@@ -113,6 +132,7 @@ class DecisionEngine:
             "breadth_confirmation": breadth_confirm,
             "flow_confirmation": flow_confirm,
             "spy_liquidity": liquidity_ok,
+            "session_window": self._session_window_open(timestamp),
         }
         reasons: list[str] = []
         labels = {
@@ -123,6 +143,7 @@ class DecisionEngine:
             "breadth_confirmation": "Constituent breadth contradicts the forecast",
             "flow_confirmation": "Tape/order-flow breadth contradicts the forecast",
             "spy_liquidity": "SPY spread is too wide",
+            "session_window": "Session window is historically unprofitable for directional trades",
         }
         for key, passed in gates.items():
             if not passed:

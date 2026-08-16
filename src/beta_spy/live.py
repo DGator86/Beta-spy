@@ -76,6 +76,7 @@ class TradierMarketStream:
         self.ledger = ledger
         self.warmup = warmup
         self.alpha_state_url = (alpha_state_url or "").strip() or None
+        self.mark_seconds = 20.0
         self._stop = threading.Event()
         self._events = 0
         self._reconnects = 0
@@ -131,6 +132,7 @@ class TradierMarketStream:
                     )
                     delay = 1.0
                     next_snapshot = time.monotonic() + self.snapshot_seconds
+                    next_mark = time.monotonic() + self.mark_seconds
                     self.hub.update(status="LIVE")
                     while not self._stop.is_set():
                         try:
@@ -143,6 +145,13 @@ class TradierMarketStream:
                         if now >= next_snapshot:
                             self._publish_snapshot(datetime.now(UTC))
                             next_snapshot = now + self.snapshot_seconds
+                            next_mark = now + self.mark_seconds
+                        elif self.ledger is not None and now >= next_mark:
+                            # Fast marks between snapshots: pending entries
+                            # fill sooner and stops/targets fire up to 40s
+                            # earlier than a once-a-minute mark would allow.
+                            self._mark_ledger(datetime.now(UTC))
+                            next_mark = now + self.mark_seconds
             except (ConnectionClosed, OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
                 self._reconnects += 1
                 self.hub.update(status="DEGRADED")
@@ -315,6 +324,10 @@ class TradierMarketStream:
             None,
         )
         risk_budget = self.maximum_option_risk_dollars * snapshot.decision.risk_multiplier
+        if self.ledger is not None:
+            # Bankroll compounding and loss-streak throttle: winners raise
+            # the budget, losing streaks cut it, the daily breaker stops it.
+            risk_budget *= self.ledger.size_multiplier(datetime.now(UTC))
         spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
         spy_price = float(spy.close) if spy is not None and spy.close > 0 else None
         expected_move_dollars = 0.0

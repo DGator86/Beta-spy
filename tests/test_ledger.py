@@ -11,6 +11,18 @@ from beta_spy.storage import Tape500Store
 
 NOW = datetime(2026, 8, 17, 15, 0, tzinfo=UTC)
 
+# Quotes that cross through the debit spread's resting mid (limit 1.10).
+DEBIT_FILL_QUOTES = {
+    "SPY260817C00600000": (1.95, 2.00),
+    "SPY260817C00605000": (0.90, 0.95),
+}
+CONDOR_ENTRY_QUOTES = {
+    "SPY260817P00590000": (0.5, 0.55),
+    "SPY260817P00585000": (0.2, 0.25),
+    "SPY260817C00610000": (0.5, 0.55),
+    "SPY260817C00615000": (0.2, 0.25),
+}
+
 
 def _leg(symbol: str, side: str, right: str, strike: float, bid: float, ask: float) -> OptionLeg:
     return OptionLeg(symbol=symbol, side=side, right=right, strike=strike, bid=bid, ask=ask, delta=None)
@@ -61,39 +73,77 @@ def _ledger(tmp_path, **kwargs) -> PaperLedger:
     return PaperLedger(store, **kwargs)
 
 
+def _fill_debit(ledger: PaperLedger) -> None:
+    assert ledger.open_position(_debit_plan(), NOW) is not None
+    # Market crosses through the mid: the resting limit fills at 1.10.
+    assert ledger.mark_positions(DEBIT_FILL_QUOTES, NOW + timedelta(seconds=20)) == []
+    working = ledger._rows(("OPEN",))
+    assert len(working) == 1
+    assert working[0]["entry_price"] == 1.1
+
+
+def _fill_condor(ledger: PaperLedger, opened: datetime = NOW) -> None:
+    assert ledger.open_position(_condor_plan(), opened) is not None
+    # Entry quotes never reach the 0.60 mid; the patience timeout pays up
+    # and crosses at the 0.50 credit.
+    ledger.mark_positions(CONDOR_ENTRY_QUOTES, opened + timedelta(minutes=2))
+    assert ledger._rows(("OPEN",))[0]["entry_price"] == 0.5
+
+
+def test_pending_entry_fills_at_mid_improving_on_cross(tmp_path):
+    ledger = _ledger(tmp_path)
+    _fill_debit(ledger)
+    row = ledger._rows(("OPEN",))[0]
+    # Mid fill at 1.10 beats the 1.20 cross the plan assumed.
+    assert row["entry_price"] == 1.1
+    assert row["max_loss_dollars"] == 110.0
+    assert row["max_profit_dollars"] == 390.0
+
+
+def test_pending_entry_times_out_and_pays_up(tmp_path):
+    ledger = _ledger(tmp_path, patience_seconds=90.0)
+    ledger.open_position(_condor_plan(), NOW)
+    # Before the timeout nothing fills (0.50 cross < 0.60 mid limit).
+    ledger.mark_positions(CONDOR_ENTRY_QUOTES, NOW + timedelta(seconds=30))
+    assert ledger._rows(("PENDING",)) and not ledger._rows(("OPEN",))
+    ledger.mark_positions(CONDOR_ENTRY_QUOTES, NOW + timedelta(seconds=120))
+    row = ledger._rows(("OPEN",))[0]
+    assert row["entry_price"] == 0.5
+
+
 def test_debit_spread_takes_profit_and_reports(tmp_path):
     ledger = _ledger(tmp_path)
-    assert ledger.open_position(_debit_plan(), NOW) is not None
-    # Long leg sells at 1.90, short leg buys back at 0.10: value 1.80 vs 1.20 in.
+    _fill_debit(ledger)
+    # Long leg sells at 1.75, short buys back at 0.10: value 1.65 vs 1.10 in.
     quotes = {
-        "SPY260817C00600000": (1.9, 2.0),
+        "SPY260817C00600000": (1.75, 1.85),
         "SPY260817C00605000": (0.05, 0.10),
     }
     closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=3))
     assert len(closed) == 1
     assert closed[0]["exit_reason"] == "TAKE_PROFIT"
-    assert closed[0]["realized_pnl_dollars"] == 60.0
+    assert closed[0]["realized_pnl_dollars"] == 55.0
     stats = ledger.stats(NOW + timedelta(minutes=4))
     assert stats["closed_count"] == 1
     assert stats["wins"] == 1
-    assert stats["day_realized_pnl_dollars"] == 60.0
+    assert stats["day_realized_pnl_dollars"] == 55.0
 
 
 def test_debit_spread_stops_out(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.open_position(_debit_plan(), NOW)
+    _fill_debit(ledger)
     quotes = {
         "SPY260817C00600000": (0.6, 0.7),
         "SPY260817C00605000": (0.05, 0.10),
     }
     closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=3))
     assert closed[0]["exit_reason"] == "STOP_LOSS"
-    assert closed[0]["realized_pnl_dollars"] == -70.0
+    assert closed[0]["realized_pnl_dollars"] == -60.0
 
 
 def test_directional_position_closes_at_horizon(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.open_position(_debit_plan(), NOW)
+    _fill_debit(ledger)
     # Mark near entry: no profit target or stop is touched.
     quotes = {
         "SPY260817C00600000": (2.0, 2.1),
@@ -106,7 +156,7 @@ def test_directional_position_closes_at_horizon(tmp_path):
 
 def test_condor_takes_profit_on_premium_decay(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.open_position(_condor_plan(), NOW)
+    _fill_condor(ledger)
     # Shorts buy back for 0.10 each, longs go out worthless: keeps 0.30 of 0.50.
     quotes = {
         "SPY260817P00590000": (0.05, 0.10),
@@ -121,7 +171,7 @@ def test_condor_takes_profit_on_premium_decay(tmp_path):
 
 def test_condor_stops_at_twice_credit(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.open_position(_condor_plan(), NOW)
+    _fill_condor(ledger)
     quotes = {
         "SPY260817P00590000": (0.8, 0.85),
         "SPY260817P00585000": (0.05, 0.10),
@@ -135,7 +185,7 @@ def test_condor_stops_at_twice_credit(tmp_path):
 
 def test_condor_force_closed_before_expiry(tmp_path):
     ledger = _ledger(tmp_path)
-    ledger.open_position(_condor_plan(), NOW)
+    _fill_condor(ledger)
     quotes = {
         "SPY260817P00590000": (0.4, 0.45),
         "SPY260817P00585000": (0.15, 0.20),
@@ -172,6 +222,66 @@ def test_duplicate_strategy_and_book_limit_refused(tmp_path):
     assert ledger.open_position(put_plan, NOW) is None
 
 
+def test_daily_loss_breaker_blocks_new_positions(tmp_path):
+    ledger = _ledger(tmp_path, daily_loss_limit_dollars=50.0)
+    _fill_debit(ledger)
+    quotes = {
+        "SPY260817C00600000": (0.6, 0.7),
+        "SPY260817C00605000": (0.05, 0.10),
+    }
+    closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=3))
+    assert closed[0]["realized_pnl_dollars"] == -60.0
+    assert ledger.breaker_tripped(NOW + timedelta(minutes=4))
+    assert ledger.open_position(_condor_plan(), NOW + timedelta(minutes=5)) is None
+    # A new day resets the breaker.
+    next_day = NOW + timedelta(days=1)
+    assert not ledger.breaker_tripped(next_day)
+    assert ledger.open_position(_condor_plan(), next_day) is not None
+
+
+def test_size_multiplier_compounds_and_throttles(tmp_path):
+    ledger = _ledger(tmp_path, starting_equity=1000.0, daily_loss_limit_dollars=10_000.0)
+    assert ledger.size_multiplier(NOW) == 1.0
+    with ledger.store.lock:
+        # A banked win raises equity and therefore size.
+        ledger.store.connection.execute(
+            """
+            INSERT INTO paper_positions(
+                opened_at,strategy,direction,expiration,contracts,entry_price,is_credit,
+                max_loss_dollars,max_profit_dollars,hold_minutes,legs,status,closed_at,
+                realized_pnl_dollars
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                "2026-08-16T15:00:00Z", "CALL_DEBIT_SPREAD", "BULLISH", "2026-08-16",
+                1, 1.0, 0, 100.0, 400.0, 15.0, "[]", "CLOSED", "2026-08-16T15:20:00Z", 500.0,
+            ),
+        )
+        ledger.store.connection.commit()
+    assert ledger.size_multiplier(NOW) == 1.5
+    # Three consecutive losses today halve the multiplier.
+    with ledger.store.lock:
+        for index in range(3):
+            ledger.store.connection.execute(
+                """
+                INSERT INTO paper_positions(
+                    opened_at,strategy,direction,expiration,contracts,entry_price,is_credit,
+                    max_loss_dollars,max_profit_dollars,hold_minutes,legs,status,closed_at,
+                    realized_pnl_dollars
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    "2026-08-17T14:00:00Z", "CALL_DEBIT_SPREAD", "BULLISH", "2026-08-17",
+                    1, 1.0, 0, 100.0, 400.0, 15.0, "[]", "CLOSED",
+                    f"2026-08-17T14:{10 + index:02d}:00Z", -10.0,
+                ),
+            )
+        ledger.store.connection.commit()
+    assert ledger.consecutive_losses_today(NOW) == 3
+    expected = min((1000.0 + 500.0 - 30.0) / 1000.0, 3.0) * 0.5
+    assert ledger.size_multiplier(NOW) == expected
+
+
 def test_alpha_signal_recorded_and_published(tmp_path, monkeypatch):
     store = Tape500Store(tmp_path / "alpha.sqlite")
     hub = StateHub()
@@ -200,20 +310,3 @@ def test_alpha_signal_recorded_and_published(tmp_path, monkeypatch):
     row = store.connection.execute("SELECT payload FROM alpha_signals").fetchone()
     assert json.loads(row[0])["spy_price"] == 776.34
     stream.close()
-
-
-def test_daily_loss_breaker_blocks_new_positions(tmp_path):
-    ledger = _ledger(tmp_path, daily_loss_limit_dollars=50.0)
-    ledger.open_position(_debit_plan(), NOW)
-    quotes = {
-        "SPY260817C00600000": (0.6, 0.7),
-        "SPY260817C00605000": (0.05, 0.10),
-    }
-    closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=3))
-    assert closed[0]["realized_pnl_dollars"] == -70.0
-    assert ledger.breaker_tripped(NOW + timedelta(minutes=4))
-    assert ledger.open_position(_condor_plan(), NOW + timedelta(minutes=5)) is None
-    # A new day resets the breaker.
-    next_day = NOW + timedelta(days=1)
-    assert not ledger.breaker_tripped(next_day)
-    assert ledger.open_position(_condor_plan(), next_day) is not None

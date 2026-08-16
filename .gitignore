@@ -9,3 +9,5 @@ reports/
 *.sqlite-wal
 *.sqlite-shm
 .env
+venv/
+src/beta_spy.egg-info/

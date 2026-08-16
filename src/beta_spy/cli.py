@@ -52,6 +52,12 @@ def main() -> None:
         help="Replay this many stored sessions at startup so models open warm (0 disables)",
     )
     run.add_argument(
+        "--bankroll",
+        type=float,
+        default=10_000.0,
+        help="Paper starting equity; risk compounds with realized P&L relative to it (0 disables)",
+    )
+    run.add_argument(
         "--alpha-state-url",
         default=os.environ.get("ALPHA_SPY_STATE_URL", "http://127.0.0.1:8787/api/v1/state"),
         help="Alpha-spy state endpoint to record side-by-side signals from (empty disables)",
@@ -197,6 +203,7 @@ def main() -> None:
             daily_loss_limit_dollars=(
                 args.daily_loss_limit if args.daily_loss_limit is not None else args.risk * 3.0
             ),
+            starting_equity=args.bankroll if args.bankroll > 0 else None,
         )
 
         def _warm_start() -> None:
