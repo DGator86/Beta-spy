@@ -288,6 +288,9 @@ def write_atomic(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent, text=True)
     try:
+        # mkstemp creates mode-600 files; nginx (www-data) must be able to
+        # read the published document.
+        os.fchmod(fd, 0o644)
         with os.fdopen(fd, "w") as f:
             json.dump(payload, f, separators=(",", ":")); f.write("\n"); f.flush(); os.fsync(f.fileno())
         os.replace(temp, path)
