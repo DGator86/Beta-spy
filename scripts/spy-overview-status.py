@@ -72,7 +72,18 @@ def direction(prob_up: float | None, expected: float | None = None) -> str:
 
 def alpha_horizons(raw: dict[str, Any]) -> list[dict[str, Any]]:
     source = raw.get("forecast_horizons") or raw.get("forecast") or {}
-    values = source.values() if isinstance(source, dict) else source if isinstance(source, list) else []
+    if isinstance(source, dict):
+        # Live Alpha publishes a dict keyed "5m"/"15m"/"30m" whose values do
+        # not carry horizon_minutes; recover it from the key.
+        values = []
+        for key, item in source.items():
+            if isinstance(item, dict) and num(item.get("horizon_minutes")) is None:
+                text = str(key).strip().lower()
+                if text.endswith("m") and text[:-1].isdigit():
+                    item = {**item, "horizon_minutes": int(text[:-1])}
+            values.append(item)
+    else:
+        values = source if isinstance(source, list) else []
     rows = []
     for item in values:
         if not isinstance(item, dict) or num(item.get("horizon_minutes")) is None:
