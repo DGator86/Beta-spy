@@ -134,6 +134,7 @@ class TradierMarketStream:
                     next_snapshot = time.monotonic() + self.snapshot_seconds
                     next_mark = time.monotonic() + self.mark_seconds
                     self.hub.update(status="LIVE")
+                    self.hub.patch_stream(last_error=None)
                     while not self._stop.is_set():
                         try:
                             raw = websocket.recv(timeout=1.0)
