@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
-from typing import Any, Callable
+from typing import Any
 
 import httpx
 from websockets.exceptions import ConnectionClosed
@@ -81,6 +82,8 @@ class TradierMarketStream:
         self._events = 0
         self._reconnects = 0
         self._last_option_refresh = 0.0
+        self._cached_chain: list[dict[str, Any]] | None = None
+        self._cached_expiration: str | None = None
         self._http = httpx.Client(
             base_url=TRADIER_API,
             headers={"Authorization": f"Bearer {self.token}", "Accept": "application/json"},
@@ -239,7 +242,11 @@ class TradierMarketStream:
             return
         plan: OptionPlan | None = None
         if snapshot.decision.action in {"TRADE", "TRADE_NEUTRAL"}:
-            plan = self._option_plan(snapshot)
+            try:
+                plan = self._option_plan(snapshot)
+            except Exception as exc:  # noqa: BLE001 - chain fetch must not kill the tape
+                self.hub.patch_stream(last_error=f"option-plan failed: {exc}")
+                plan = None
         ledger_stats = None
         if self.ledger is not None:
             if plan is not None:
@@ -278,44 +285,50 @@ class TradierMarketStream:
 
     def _option_plan(self, snapshot: EngineSnapshot) -> OptionPlan | None:
         now = time.monotonic()
-        if now - self._last_option_refresh < 20.0:
-            return None
-        self._last_option_refresh = now
-        expirations = self._get("/markets/options/expirations", {"symbol": "SPY", "includeAllRoots": "true"})
-        dates = (expirations.get("expirations") or {}).get("date") or []
-        if isinstance(dates, str):
-            dates = [dates]
-        if not dates:
-            return None
-        today = datetime.now().date().isoformat()
-        eligible = sorted(date for date in dates if date >= today)
-        if not eligible:
-            return None
-        expiration = today if today in dates else eligible[0]
-        chain = self._get(
-            "/markets/options/chains",
-            {"symbol": "SPY", "expiration": expiration, "greeks": "true"},
-        )
-        rows = (chain.get("options") or {}).get("option") or []
-        if isinstance(rows, dict):
-            rows = [rows]
-        normalized: list[dict[str, Any]] = []
-        for row in rows:
-            greeks = row.get("greeks") or {}
-            normalized.append(
-                {
-                    "symbol": row.get("symbol"),
-                    "expiration": row.get("expiration_date") or expiration,
-                    "strike": row.get("strike"),
-                    "right": "C" if str(row.get("option_type")).lower() == "call" else "P",
-                    "bid": row.get("bid"),
-                    "ask": row.get("ask"),
-                    "open_interest": row.get("open_interest") or 0,
-                    "delta": greeks.get("delta"),
-                    "gamma": greeks.get("gamma"),
-                    "theta": greeks.get("theta"),
-                }
+        stale_cache = self._cached_chain is None or (now - self._last_option_refresh) >= 20.0
+        if stale_cache:
+            expirations = self._get("/markets/options/expirations", {"symbol": "SPY", "includeAllRoots": "true"})
+            dates = (expirations.get("expirations") or {}).get("date") or []
+            if isinstance(dates, str):
+                dates = [dates]
+            if not dates:
+                return None
+            today = datetime.now(UTC).date().isoformat()
+            eligible = sorted(date for date in dates if date >= today)
+            if not eligible:
+                return None
+            expiration = today if today in dates else eligible[0]
+            chain = self._get(
+                "/markets/options/chains",
+                {"symbol": "SPY", "expiration": expiration, "greeks": "true"},
             )
+            rows = (chain.get("options") or {}).get("option") or []
+            if isinstance(rows, dict):
+                rows = [rows]
+            normalized: list[dict[str, Any]] = []
+            for row in rows:
+                greeks = row.get("greeks") or {}
+                normalized.append(
+                    {
+                        "symbol": row.get("symbol"),
+                        "expiration": row.get("expiration_date") or expiration,
+                        "strike": row.get("strike"),
+                        "right": "C" if str(row.get("option_type")).lower() == "call" else "P",
+                        "bid": row.get("bid"),
+                        "ask": row.get("ask"),
+                        "open_interest": row.get("open_interest") or 0,
+                        "delta": greeks.get("delta"),
+                        "gamma": greeks.get("gamma"),
+                        "theta": greeks.get("theta"),
+                    }
+                )
+            if not normalized:
+                return None
+            self._cached_chain = normalized
+            self._cached_expiration = expiration
+            self._last_option_refresh = now
+        normalized = self._cached_chain or []
+        expiration = self._cached_expiration or datetime.now(UTC).date().isoformat()
         primary = next(
             (
                 forecast
@@ -357,7 +370,7 @@ class TradierMarketStream:
             normalized,
             snapshot.decision.direction,
             maximum_risk_dollars=risk_budget,
-            hold_minutes=float(snapshot.decision.primary_horizon),
+            hold_minutes=float(snapshot.decision.hold_minutes or snapshot.decision.primary_horizon),
             spy_price=spy_price,
             expected_move_dollars=expected_move_dollars,
             minutes_to_expiry=minutes_to_expiry,

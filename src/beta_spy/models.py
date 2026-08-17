@@ -207,6 +207,9 @@ class Decision:
     # out-of-sample to roughly double direction-adjusted P&L versus flat
     # sizing on the same trade set.
     risk_multiplier: float = 1.0
+    # 15-minute forecast default; session-trend overlay may extend this to the
+    # 15:50 ET flatten so a grind is not chopped into friction-losing scalps.
+    hold_minutes: float = 15.0
 
 
 @dataclass(frozen=True)

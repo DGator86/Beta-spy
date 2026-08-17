@@ -55,6 +55,9 @@ class DecisionEngine:
         votes_required: int = 3,
         vote_confidence: float = 0.30,
         min_expected_move_bps: float = 2.0,
+        session_bias_bps: float = 6.0,
+        session_hold_bps: float = 8.0,
+        session_short_vol_bps: float = 12.0,
     ) -> None:
         self.primary_horizon = primary_horizon
         self.min_probability = min_probability
@@ -71,8 +74,21 @@ class DecisionEngine:
         self.votes_required = int(votes_required)
         self.vote_confidence = float(vote_confidence)
         self.min_expected_move_bps = float(min_expected_move_bps)
+        self.session_bias_bps = float(session_bias_bps)
+        self.session_hold_bps = float(session_hold_bps)
+        self.session_short_vol_bps = float(session_short_vol_bps)
         self._recent_returns: deque[float] = deque(maxlen=quiet_window_minutes)
         self._last_session: object = None
+        self._session_open_price: float | None = None
+
+    def _minutes_from_open(self, timestamp: datetime) -> int:
+        eastern = timestamp.astimezone(_EASTERN)
+        return (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+
+    def _session_hold_minutes(self, timestamp: datetime) -> float:
+        eastern = timestamp.astimezone(_EASTERN)
+        end = eastern.replace(hour=15, minute=50, second=0, microsecond=0)
+        return max(15.0, (end - eastern).total_seconds() / 60.0)
 
     def _session_window_open(self, timestamp: datetime) -> bool:
         if not self.blocked_windows_from_open:
@@ -86,10 +102,19 @@ class DecisionEngine:
         timestamp: datetime,
         factors: MarketFactors,
         forecasts: tuple[HorizonForecast, ...],
+        spy_price: float | None = None,
     ) -> Decision:
         if timestamp.date() != self._last_session:
             self._recent_returns.clear()
+            self._session_open_price = None
             self._last_session = timestamp.date()
+        if (
+            spy_price is not None
+            and spy_price > 0
+            and self._session_open_price is None
+            and 0 <= self._minutes_from_open(timestamp) <= 5
+        ):
+            self._session_open_price = float(spy_price)
         if factors.spy_return_1m is not None:
             self._recent_returns.append(abs(float(factors.spy_return_1m)))
         by_horizon = {forecast.horizon_minutes: forecast for forecast in forecasts}
@@ -140,6 +165,14 @@ class DecisionEngine:
         known_flow = [item for item in flow_signals if item != 0]
         flow_confirm = True if not known_flow else sum(item == direction for item in known_flow) >= 2
         liquidity_ok = factors.spy_spread_bps is None or factors.spy_spread_bps <= self.max_spy_spread_bps
+        open_bps = None
+        if self._session_open_price and spy_price and spy_price > 0:
+            open_bps = (float(spy_price) / self._session_open_price - 1.0) * 10_000.0
+        session_bias_ok = True
+        if direction > 0 and open_bps is not None and open_bps <= -self.session_bias_bps:
+            session_bias_ok = False
+        if direction < 0 and open_bps is not None and open_bps >= self.session_bias_bps:
+            session_bias_ok = False
         gates = {
             "coverage": factors.coverage_ratio >= self.min_coverage,
             "covered_weight": factors.covered_weight >= self.min_covered_weight,
@@ -151,6 +184,7 @@ class DecisionEngine:
             "flow_confirmation": flow_confirm,
             "spy_liquidity": liquidity_ok,
             "session_window": self._session_window_open(timestamp),
+            "session_bias": session_bias_ok,
         }
         reasons: list[str] = []
         labels = {
@@ -163,6 +197,7 @@ class DecisionEngine:
             "flow_confirmation": "Tape/order-flow breadth contradicts the forecast",
             "spy_liquidity": "SPY spread is too wide",
             "session_window": "Session window is historically unprofitable for directional trades",
+            "session_bias": "Forecast fades a cash session that has not reclaimed the open",
         }
         for key, passed in gates.items():
             if not passed:
@@ -191,6 +226,9 @@ class DecisionEngine:
                 recent_mean = sum(self._recent_returns) / len(self._recent_returns)
                 regime_multiplier = min(max(recent_mean / self.regime_reference_return, 0.75), 1.5)
             risk_multiplier = float(min(max(edge_multiplier * regime_multiplier, 0.5), 2.5))
+            hold_minutes = float(self.primary_horizon)
+            if open_bps is not None and abs(open_bps) >= self.session_hold_bps:
+                hold_minutes = self._session_hold_minutes(timestamp)
             return Decision(
                 timestamp=timestamp,
                 action="TRADE",
@@ -202,8 +240,9 @@ class DecisionEngine:
                 reasons=("Constituent breadth, flow, and forecast stack are aligned",),
                 structure=structure,
                 risk_multiplier=risk_multiplier,
+                hold_minutes=hold_minutes,
             )
-        neutral = self._neutral_premium_decision(timestamp, factors, forecasts, gates)
+        neutral = self._neutral_premium_decision(timestamp, factors, forecasts, gates, open_bps=open_bps)
         if neutral is not None:
             return neutral
         return Decision(
@@ -223,6 +262,8 @@ class DecisionEngine:
         factors: MarketFactors,
         forecasts: tuple[HorizonForecast, ...],
         directional_gates: dict[str, bool],
+        *,
+        open_bps: float | None = None,
     ) -> Decision | None:
         """Sell defined-risk premium (iron condor) only on a genuinely quiet tape.
 
@@ -249,6 +290,12 @@ class DecisionEngine:
         recent_mean = (
             sum(self._recent_returns) / len(self._recent_returns) if self._recent_returns else None
         )
+        vwap_bps = factors.spy_vwap_distance_bps
+        trend_day = False
+        if open_bps is not None and abs(open_bps) >= self.session_short_vol_bps:
+            trend_day = True
+        if vwap_bps is not None and abs(vwap_bps) >= self.session_short_vol_bps:
+            trend_day = True
         gates = {
             "coverage": directional_gates.get("coverage", False),
             "covered_weight": directional_gates.get("covered_weight", False),
@@ -261,6 +308,7 @@ class DecisionEngine:
                 and factors.volatility_weighted is not None
                 and factors.volatility_weighted <= self.quiet_volatility_threshold
             ),
+            "not_a_trend_day": not trend_day,
         }
         if not all(gates.values()):
             return None

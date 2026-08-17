@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any
 
 from .breadth import BreadthAggregator
 from .decision import DecisionEngine
@@ -13,12 +14,12 @@ from .forecast import OnlineForecastStack, OnlineMetaGate, meta_vector, vectoriz
 from .indicators import SymbolIndicatorState
 from .models import (
     EngineSnapshot,
+    FlowFeatures,
     HoldingMeta,
     MinuteBar,
     QuoteTop,
     SymbolFeatures,
     TradePrint,
-    FlowFeatures,
 )
 from .storage import Tape500Store
 
@@ -50,7 +51,7 @@ class _BarBuilder:
     pv: float = 0.0
 
     @classmethod
-    def start(cls, trade: TradePrint) -> "_BarBuilder":
+    def start(cls, trade: TradePrint) -> _BarBuilder:
         return cls(
             symbol=trade.symbol,
             timestamp=_minute_key(trade.timestamp),
@@ -123,7 +124,7 @@ class Tape500Engine:
         holdings: Iterable[Any],
         *,
         database: Path | str | None = None,
-    ) -> "Tape500Engine":
+    ) -> Tape500Engine:
         metas = [
             HoldingMeta(
                 symbol=str(item.symbol),
@@ -276,7 +277,7 @@ class Tape500Engine:
         if spy is None or spy.close <= 0:
             return None
         forecasts = self.forecasts.step(timestamp, factors, spy.close)
-        decision = self.decisions.decide(timestamp, factors, forecasts)
+        decision = self.decisions.decide(timestamp, factors, forecasts, spy_price=spy.close)
         self.meta_gate.mature(timestamp, spy.close)
         if decision.action == "TRADE":
             direction = 1 if decision.direction == "BULLISH" else -1

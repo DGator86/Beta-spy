@@ -354,6 +354,78 @@ def test_neutral_trade_requires_quiet_tape_not_just_model_neutrality():
     assert decision.risk_multiplier == 0.5
 
 
+def test_session_bias_blocks_calls_and_extends_put_hold():
+    from beta_spy.decision import DecisionEngine
+    from beta_spy.models import HorizonForecast, MarketFactors
+
+    open_ts = datetime(2026, 8, 17, 13, 30, tzinfo=UTC)
+    later = datetime(2026, 8, 17, 14, 10, tzinfo=UTC)
+
+    def forecasts(prob: float, exp_bps: float):
+        return tuple(
+            HorizonForecast(horizon_minutes=h, probability_up=prob, expected_return_bps=exp_bps,
+                            confidence=0.5, model_ready=True, sample_count=500)
+            for h in (5, 15, 30)
+        )
+
+    def factors(trend: float):
+        return MarketFactors(
+            timestamp=later, symbol_count=500, expected_symbol_count=500,
+            coverage_ratio=0.99, covered_weight=0.99,
+            trend_ew=trend, trend_weighted=trend, momentum_ew=trend,
+            momentum_weighted=trend, volume_ew=0.0, volume_weighted=0.0,
+            flow_ew=trend, flow_weighted=trend, volatility_ew=0.10,
+            volatility_weighted=0.10, pct_above_vwap=0.8, pct_ema_bullish=0.8,
+            pct_positive_5m=0.8, pct_buy_flow=0.8, participation=trend,
+            concentration=0.1, breadth_acceleration=0.0, spy_return_1m=0.0002,
+            spy_return_5m=0.001, spy_vwap_distance_bps=-8.0, spy_flow=trend,
+            spy_quote_imbalance=0.2, spy_spread_bps=1.0,
+        )
+
+    calls = DecisionEngine()
+    calls.decide(open_ts, factors(0.6), forecasts(0.66, 8.0), spy_price=776.18)
+    faded = calls.decide(later, factors(0.6), forecasts(0.66, 8.0), spy_price=775.56)
+    assert faded.action == "NO_TRADE"
+    assert faded.gates["session_bias"] is False
+
+    puts = DecisionEngine()
+    puts.decide(open_ts, factors(-0.6), forecasts(0.34, -8.0), spy_price=776.18)
+    held = puts.decide(later, factors(-0.6), forecasts(0.34, -8.0), spy_price=775.40)
+    assert held.action == "TRADE"
+    assert held.direction == "BEARISH"
+    assert held.hold_minutes > 90
+
+
+def test_neutral_premium_blocked_when_far_from_vwap():
+    from beta_spy.decision import DecisionEngine
+    from beta_spy.models import HorizonForecast, MarketFactors
+
+    engine = DecisionEngine()
+    ts = datetime(2026, 8, 10, 15, 0, tzinfo=UTC)
+    neutral_forecasts = tuple(
+        HorizonForecast(horizon_minutes=h, probability_up=0.51, expected_return_bps=0.5,
+                        confidence=0.4, model_ready=True, sample_count=500)
+        for h in (5, 15, 30)
+    )
+
+    def factors_at(minute: int):
+        return MarketFactors(
+            timestamp=ts + timedelta(minutes=minute), symbol_count=500,
+            expected_symbol_count=500, coverage_ratio=0.99, covered_weight=0.99,
+            trend_ew=0.0, trend_weighted=0.0, momentum_ew=0.0, momentum_weighted=0.0,
+            volume_ew=0.0, volume_weighted=0.0, flow_ew=0.0, flow_weighted=0.0,
+            volatility_ew=0.10, volatility_weighted=0.10, pct_above_vwap=0.5,
+            pct_ema_bullish=0.5, pct_positive_5m=0.5, pct_buy_flow=0.5,
+            participation=0.0, concentration=0.1, breadth_acceleration=0.0,
+            spy_return_1m=0.00005, spy_return_5m=0.0, spy_vwap_distance_bps=-20.0,
+            spy_flow=0.0, spy_quote_imbalance=0.0, spy_spread_bps=1.0,
+        )
+
+    for minute in range(20):
+        decision = engine.decide(ts + timedelta(minutes=minute), factors_at(minute), neutral_forecasts)
+    assert decision.action == "NO_TRADE"
+
+
 def test_causal_backtest_report_scores_matured_forecasts(tmp_path: Path) -> None:
     from beta_spy.backtest import run_backtest, write_report
 
