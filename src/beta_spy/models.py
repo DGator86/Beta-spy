@@ -61,6 +61,79 @@ class FlowFeatures:
     absorption: float | None = None
     quote_updates: int = 0
     trades: int = 0
+    signed_delta: float | None = None
+    cvd_session: float | None = None
+    cvd_5m: float | None = None
+    cvd_15m: float | None = None
+    cvd_slope_5m: float | None = None
+    cvd_slope_15m: float | None = None
+    cvd_zscore: float | None = None
+    price_cvd_divergence_5m: float | None = None
+    price_cvd_divergence_15m: float | None = None
+    signed_aggressive_volume: float | None = None
+    directional_volume: float | None = None
+    price_displacement_bps: float | None = None
+    flow_to_displacement: float | None = None
+    displacement_per_10k_volume: float | None = None
+    buy_absorption: float | None = None
+    sell_absorption: float | None = None
+    initiative_buy_efficiency: float | None = None
+    initiative_sell_efficiency: float | None = None
+    best_bid_size_persistence: float | None = None
+    best_ask_size_persistence: float | None = None
+    best_bid_replenishment: float | None = None
+    best_ask_replenishment: float | None = None
+    best_bid_withdrawal_rate: float | None = None
+    best_ask_withdrawal_rate: float | None = None
+    quote_imbalance_velocity: float | None = None
+    quote_imbalance_persistence: float | None = None
+
+
+@dataclass(frozen=True)
+class StructureFeatures:
+    swing_prominence_3: float | None = None
+    swing_prominence_5: float | None = None
+    swing_prominence_9: float | None = None
+    swing_prominence_17: float | None = None
+    distance_to_last_swing_high_atr: float | None = None
+    distance_to_last_swing_low_atr: float | None = None
+    structure_state: float | None = None
+    structure_break_strength: float | None = None
+    failed_break_strength: float | None = None
+    upper_wick_ratio: float | None = None
+    lower_wick_ratio: float | None = None
+    body_ratio: float | None = None
+    close_location: float | None = None
+    effort_result_ratio: float | None = None
+    displacement_efficiency: float | None = None
+    sweep_high_score: float | None = None
+    sweep_low_score: float | None = None
+    acceptance_above_score: float | None = None
+    acceptance_below_score: float | None = None
+    last_swing_sign: float | None = None
+
+
+@dataclass(frozen=True)
+class AuctionFeatures:
+    session_poc: float | None = None
+    session_vah: float | None = None
+    session_val: float | None = None
+    distance_to_poc: float | None = None
+    distance_to_vah: float | None = None
+    distance_to_val: float | None = None
+    nearest_hvn_distance: float | None = None
+    nearest_lvn_distance: float | None = None
+    poc_migration: float | None = None
+    value_area_width: float | None = None
+    inside_value: float | None = None
+    above_value: float | None = None
+    below_value: float | None = None
+    max_positive_delta_price: float | None = None
+    max_negative_delta_price: float | None = None
+    stacked_buy_imbalance_count: int = 0
+    stacked_sell_imbalance_count: int = 0
+    local_absorption_high: float | None = None
+    local_absorption_low: float | None = None
 
 
 @dataclass(frozen=True)
@@ -85,6 +158,8 @@ class SymbolFeatures:
     relative_volume20: float | None
     range_expansion: float | None
     flow: FlowFeatures = field(default_factory=FlowFeatures)
+    structure: StructureFeatures = field(default_factory=StructureFeatures)
+    auction: AuctionFeatures = field(default_factory=AuctionFeatures)
 
     @property
     def above_vwap(self) -> bool | None:
@@ -142,6 +217,24 @@ class MarketFactors:
     spy_flow: float | None
     spy_quote_imbalance: float | None
     spy_spread_bps: float | None
+    structure_ew: float | None = None
+    structure_weighted: float | None = None
+    pct_structure_bullish: float | None = None
+    pct_structure_bearish: float | None = None
+    structure_divergence: float | None = None
+    absorption_ew: float | None = None
+    absorption_weighted: float | None = None
+    cvd_ew: float | None = None
+    cvd_weighted: float | None = None
+    pct_positive_cvd: float | None = None
+    pct_buy_absorption: float | None = None
+    pct_sell_absorption: float | None = None
+    pct_bullish_sweep: float | None = None
+    pct_bearish_sweep: float | None = None
+    spy_cvd: float | None = None
+    spy_cvd_divergence: float | None = None
+    spy_poc_distance: float | None = None
+    spy_value_location: float | None = None
     sectors: tuple[SectorFactors, ...] = ()
 
     def feature_dict(self) -> dict[str, float]:
@@ -171,6 +264,20 @@ class MarketFactors:
             "spy_flow": self.spy_flow,
             "spy_quote_imbalance": self.spy_quote_imbalance,
             "spy_spread_bps": self.spy_spread_bps,
+            "structure_ew": self.structure_ew,
+            "structure_weighted": self.structure_weighted,
+            "pct_structure_bullish": self.pct_structure_bullish,
+            "pct_structure_bearish": self.pct_structure_bearish,
+            "structure_divergence": self.structure_divergence,
+            "absorption_ew": self.absorption_ew,
+            "absorption_weighted": self.absorption_weighted,
+            "cvd_ew": self.cvd_ew,
+            "cvd_weighted": self.cvd_weighted,
+            "pct_positive_cvd": self.pct_positive_cvd,
+            "spy_cvd": self.spy_cvd,
+            "spy_cvd_divergence": self.spy_cvd_divergence,
+            "spy_poc_distance": self.spy_poc_distance,
+            "spy_value_location": self.spy_value_location,
         }
         return {key: float(value) if value is not None else 0.0 for key, value in values.items()}
 

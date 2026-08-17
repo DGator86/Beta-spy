@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from .auction import SpyAuctionState
 from .breadth import BreadthAggregator
 from .decision import DecisionEngine
 from .flow import FlowAccumulator
@@ -117,6 +118,8 @@ class Tape500Engine:
         self.forecasts = forecast_stack or OnlineForecastStack()
         self.decisions = decision_engine or DecisionEngine()
         self.meta_gate = OnlineMetaGate()
+        self.auction = SpyAuctionState()
+        self._spy_micro_recovered = False
 
     @classmethod
     def from_holdings(
@@ -172,6 +175,29 @@ class Tape500Engine:
             if flow is not None:
                 self.store.save_flow(bar.timestamp, bar.symbol, flow)
 
+    def recover_spy_microstructure(self, timestamp: datetime) -> None:
+        """Rebuild SPY auction + session CVD from stored prints after a restart.
+
+        Constituent CVD stays compressed in minute_flow.payload. Only SPY has
+        the tick tape needed for a true volume-at-price profile.
+        """
+        if self.store is None or self._spy_micro_recovered or self.auction.bins:
+            return
+        scratch = FlowAccumulator()
+        count = 0
+        for trade in self.store.iter_spy_trades(timestamp.date()):
+            side = scratch.on_trade(trade)
+            self.auction.on_trade(trade, side)
+            count += 1
+        if count == 0:
+            return
+        spy_flow = self.flows["SPY"]
+        spy_flow.cvd_session = scratch.cvd_session
+        spy_flow._cvd_marks = scratch._cvd_marks
+        spy_flow.session_date = scratch.session_date
+        spy_flow.last_trade_price = scratch.last_trade_price
+        self._spy_micro_recovered = True
+
     def on_quote(self, quote: QuoteTop) -> None:
         self.flows[quote.symbol].on_quote(quote)
         if self.store is not None and quote.symbol == "SPY":
@@ -186,7 +212,9 @@ class Tape500Engine:
                 self.store.connection.commit()
 
     def on_trade(self, trade: TradePrint) -> None:
-        self.flows[trade.symbol].on_trade(trade)
+        side = self.flows[trade.symbol].on_trade(trade)
+        if trade.symbol == "SPY":
+            self.auction.on_trade(trade, side)
         bucket = _minute_key(trade.timestamp)
         current = self.builders.get(trade.symbol)
         if current is None:
@@ -264,8 +292,9 @@ class Tape500Engine:
         self.flush_completed_bars(timestamp)
         symbol_features: list[SymbolFeatures] = []
         for symbol, state in self.states.items():
-            flow = self.flow_overrides.get(symbol) or self.flows[symbol].snapshot()
-            feature = state.features(flow, timestamp)
+            flow = self.flow_overrides.get(symbol) or self.flows[symbol].snapshot(now=timestamp)
+            auction = self.auction.features(state.bars[-1].close, timestamp) if symbol == "SPY" and state.bars else None
+            feature = state.features(flow, timestamp, auction=auction)
             if feature is not None:
                 symbol_features.append(feature)
         factors = self.aggregator.aggregate(
