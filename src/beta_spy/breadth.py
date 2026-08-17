@@ -140,33 +140,52 @@ class BreadthAggregator:
                 for item in constituents
             ]
         )
-        structure_values = [
-            item.structure.structure_state
-            for item in constituents
-            if item.structure.structure_state is not None
-        ]
-        structure_pairs = [
-            (item.structure.structure_state, item.weight)
-            for item in constituents
-            if item.structure.structure_state is not None
-        ]
+        def _struct(item: SymbolFeatures) -> float | None:
+            return item.structure.structure_score if item.structure.structure_score is not None else item.structure.structure_state
+
+        structure_values = [score for item in constituents if (score := _struct(item)) is not None]
+        structure_pairs = [(score, item.weight) for item in constituents if (score := _struct(item)) is not None]
         structure_ew = _mean(structure_values)
         structure_weighted = _weighted(structure_pairs)
         structure_divergence = None
         if structure_ew is not None and structure_weighted is not None:
             structure_divergence = structure_ew - structure_weighted
         pct_struct_bull = _fraction(
-            [None if item.structure.structure_state is None else item.structure.structure_state > 0 for item in constituents]
+            [None if _struct(item) is None else _struct(item) > 0 for item in constituents]
         )
         pct_struct_bear = _fraction(
-            [None if item.structure.structure_state is None else item.structure.structure_state < 0 for item in constituents]
+            [None if _struct(item) is None else _struct(item) < 0 for item in constituents]
         )
         absorption_values = [item.flow.absorption for item in constituents if item.flow.absorption is not None]
         absorption_pairs = [
             (item.flow.absorption, item.weight) for item in constituents if item.flow.absorption is not None
         ]
-        cvd_values = [item.flow.cvd_session for item in constituents if item.flow.cvd_session is not None]
-        cvd_pairs = [(item.flow.cvd_session, item.weight) for item in constituents if item.flow.cvd_session is not None]
+        cvd_values = [item.auction.cvd_session for item in constituents if item.auction.cvd_session is not None]
+        cvd_pairs = [(item.auction.cvd_session, item.weight) for item in constituents if item.auction.cvd_session is not None]
+        sweep_values = []
+        sweep_pairs = []
+        accept_values = []
+        accept_pairs = []
+        init_values = []
+        init_pairs = []
+        for item in constituents:
+            sweep = None
+            if item.structure.sweep_high_score is not None or item.structure.sweep_low_score is not None:
+                sweep = (item.structure.sweep_low_score or 0.0) - (item.structure.sweep_high_score or 0.0)
+                sweep_values.append(sweep)
+                sweep_pairs.append((sweep, item.weight))
+            accept = None
+            if item.structure.acceptance_above_score is not None or item.structure.acceptance_below_score is not None:
+                accept = (item.structure.acceptance_above_score or 0.0) - (item.structure.acceptance_below_score or 0.0)
+                accept_values.append(accept)
+                accept_pairs.append((accept, item.weight))
+            init = None
+            buy_i = item.flow.initiative_buy_efficiency
+            sell_i = item.flow.initiative_sell_efficiency
+            if buy_i is not None or sell_i is not None:
+                init = (buy_i or 0.0) - (sell_i or 0.0)
+                init_values.append(init)
+                init_pairs.append((init, item.weight))
         participation_parts = [value for value in (pct_above, pct_ema, pct_pos5, pct_buy) if value is not None]
         participation = _mean([2.0 * value - 1.0 for value in participation_parts])
 
@@ -247,7 +266,7 @@ class BreadthAggregator:
             cvd_ew=_mean(cvd_values),
             cvd_weighted=_weighted(cvd_pairs),
             pct_positive_cvd=_fraction(
-                [None if item.flow.cvd_session is None else item.flow.cvd_session > 0 for item in constituents]
+                [None if item.auction.cvd_session is None else item.auction.cvd_session > 0 for item in constituents]
             ),
             pct_buy_absorption=_fraction(
                 [None if item.flow.buy_absorption is None else item.flow.buy_absorption > 0.5 for item in constituents]
@@ -261,8 +280,26 @@ class BreadthAggregator:
             pct_bearish_sweep=_fraction(
                 [None if item.structure.sweep_high_score is None else item.structure.sweep_high_score > 0 for item in constituents]
             ),
-            spy_cvd=spy.flow.cvd_session if spy else None,
-            spy_cvd_divergence=spy.flow.price_cvd_divergence_5m if spy else None,
+            sweep_ew=_mean(sweep_values),
+            sweep_weighted=_weighted(sweep_pairs),
+            acceptance_ew=_mean(accept_values),
+            acceptance_weighted=_weighted(accept_pairs),
+            initiative_ew=_mean(init_values),
+            initiative_weighted=_weighted(init_pairs),
+            pct_breaking_highs=_fraction(
+                [
+                    None if item.structure.structure_break_strength is None else item.structure.structure_break_strength > 0
+                    for item in constituents
+                ]
+            ),
+            pct_breaking_lows=_fraction(
+                [
+                    None if item.structure.structure_break_strength is None else item.structure.structure_break_strength < 0
+                    for item in constituents
+                ]
+            ),
+            spy_cvd=spy.auction.cvd_session if spy else None,
+            spy_cvd_divergence=spy.auction.price_cvd_divergence_5m if spy else None,
             spy_poc_distance=spy.auction.distance_to_poc if spy else None,
             spy_value_location=(
                 1.0

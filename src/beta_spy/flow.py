@@ -2,28 +2,17 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
-from math import sqrt
+from datetime import datetime
 
 from .models import FlowFeatures, QuoteTop, TradePrint
-
-
-def _zscore(values: list[float]) -> float | None:
-    if len(values) < 5:
-        return None
-    mean = sum(values) / len(values)
-    var = sum((item - mean) ** 2 for item in values) / (len(values) - 1)
-    if var <= 0:
-        return 0.0
-    return (values[-1] - mean) / sqrt(var)
 
 
 @dataclass
 class FlowAccumulator:
     """Top-of-book/tape microstructure accumulator for one symbol.
 
-    Window fields reset after each engine snapshot. Session CVD and NBBO
-    persistence survive the window reset — that is the v1 → v2 change.
+    Window fields reset after each engine snapshot. Session CVD lives in
+    auction.SessionCvd — this object is the current-minute window only.
     Aggressor classification stays conservative: at/above ask = buy,
     at/below bid = sell, inside-spread uses a tick rule. Not Level-II.
     """
@@ -45,9 +34,6 @@ class FlowAccumulator:
     ask: float | None = None
     bid_size: float | None = None
     ask_size: float | None = None
-    cvd_session: float = 0.0
-    session_date: object | None = None
-    _cvd_marks: deque[tuple[datetime, float, float]] = field(default_factory=deque)
     _bid_price: float | None = None
     _ask_price: float | None = None
     _bid_persist: int = 0
@@ -125,18 +111,11 @@ class FlowAccumulator:
     def on_trade(self, trade: TradePrint) -> int:
         if trade.size <= 0 or trade.price <= 0:
             return 0
-        day = trade.timestamp.date()
-        if self.session_date != day:
-            self.session_date = day
-            self.cvd_session = 0.0
-            self._cvd_marks.clear()
         side = self.classify(trade)
         if side > 0:
             self.buy_volume += trade.size
-            self.cvd_session += trade.size
         elif side < 0:
             self.sell_volume += trade.size
-            self.cvd_session -= trade.size
         else:
             self.neutral_volume += trade.size
         self.trade_count += 1
@@ -179,43 +158,7 @@ class FlowAccumulator:
         flow_to_disp = None
         if ofi is not None and move_bps is not None and abs(ofi) > 1e-9:
             flow_to_disp = move_bps / ofi
-        mark_time = now or datetime.now(UTC)
-        self._cvd_marks.append((mark_time, self.cvd_session, self.last_trade_price or 0.0))
-        while len(self._cvd_marks) > 400:
-            self._cvd_marks.popleft()
-        cvd_5m = cvd_15m = slope_5 = slope_15 = None
-        div_5 = div_15 = None
-        if len(self._cvd_marks) >= 2:
-            latest_t, latest_cvd, latest_px = self._cvd_marks[-1]
-
-            def _ago(minutes: int) -> tuple[float, float] | None:
-                cutoff = latest_t.timestamp() - minutes * 60
-                for stamp, cvd, px in self._cvd_marks:
-                    if stamp.timestamp() >= cutoff:
-                        return cvd, px
-                return None
-
-            ago5 = _ago(5)
-            ago15 = _ago(15)
-            if ago5 is not None:
-                cvd_5m = latest_cvd - ago5[0]
-                slope_5 = cvd_5m / 5.0
-                if ago5[1] > 0 and latest_px > 0:
-                    px_chg = latest_px - ago5[1]
-                    if px_chg * cvd_5m < 0:
-                        div_5 = abs(cvd_5m) / max(abs(px_chg), 1e-6)
-                    else:
-                        div_5 = 0.0
-            if ago15 is not None:
-                cvd_15m = latest_cvd - ago15[0]
-                slope_15 = cvd_15m / 15.0
-                if ago15[1] > 0 and latest_px > 0:
-                    px_chg = latest_px - ago15[1]
-                    if px_chg * cvd_15m < 0:
-                        div_15 = abs(cvd_15m) / max(abs(px_chg), 1e-6)
-                    else:
-                        div_15 = 0.0
-        cvd_z = _zscore([mark[1] for mark in self._cvd_marks])
+        del now
         quotes = max(self.quote_updates, 1)
         qi_velocity = None
         if len(self._qi_history) >= 2:
@@ -234,14 +177,6 @@ class FlowAccumulator:
             quote_updates=self.quote_updates,
             trades=self.trade_count,
             signed_delta=self.buy_volume - self.sell_volume,
-            cvd_session=self.cvd_session,
-            cvd_5m=cvd_5m,
-            cvd_15m=cvd_15m,
-            cvd_slope_5m=slope_5,
-            cvd_slope_15m=slope_15,
-            cvd_zscore=cvd_z,
-            price_cvd_divergence_5m=div_5,
-            price_cvd_divergence_15m=div_15,
             signed_aggressive_volume=self.buy_volume - self.sell_volume,
             directional_volume=directional,
             price_displacement_bps=move_bps,
@@ -262,7 +197,7 @@ class FlowAccumulator:
         )
 
     def reset(self) -> None:
-        """Clear the snapshot window. Session CVD and NBBO memory stay."""
+        """Clear the snapshot window. NBBO price memory stays; CVD does not live here."""
         self.buy_volume = 0.0
         self.sell_volume = 0.0
         self.neutral_volume = 0.0

@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from beta_spy.auction import SpyAuctionState
+from beta_spy.auction import SessionCvd, SpyAuctionState
 from beta_spy.breadth import BreadthAggregator
 from beta_spy.engine import Tape500Engine
+from beta_spy.feature_sets import FEATURE_SETS, names_for
 from beta_spy.flow import FlowAccumulator
 from beta_spy.forecast import FEATURE_NAMES, vectorize
 from beta_spy.models import (
+    AuctionFeatures,
     FlowFeatures,
     HoldingMeta,
     MinuteBar,
@@ -41,7 +43,9 @@ def test_structure_reads_higher_highs_and_higher_lows():
     bars = [_bar(i, close, high=close + 0.15, low=close - 0.15) for i, close in enumerate(closes)]
     features = StructureEngine().extract(bars)
     assert features.structure_state is not None
-    assert features.structure_state > 0
+    assert features.structure_score is not None
+    assert features.structure_score > 0
+    assert -1.0 <= features.structure_score <= 1.0
     assert features.body_ratio is not None
     assert 0.0 <= features.close_location <= 1.0
 
@@ -56,17 +60,19 @@ def test_sweep_high_is_a_failed_break_not_acceptance():
     assert features.acceptance_above_score in (None, 0.0) or features.failed_break_strength is not None
 
 
-def test_cvd_survives_window_reset():
+def test_cvd_lives_in_auction_not_the_flow_window():
     t = datetime(2026, 8, 17, 14, 0, tzinfo=UTC)
     flow = FlowAccumulator()
-    flow.on_trade(TradePrint("AAA", t, 100.02, 200, 100.0, 100.02))
-    first = flow.snapshot(now=t)
-    assert first.cvd_session == 200
+    cvd = SessionCvd()
+    side = flow.on_trade(TradePrint("AAA", t, 100.02, 200, 100.0, 100.02))
+    cvd.on_trade(TradePrint("AAA", t, 100.02, 200, 100.0, 100.02), side)
+    assert cvd.features().cvd_session == 200
     flow.reset()
-    flow.on_trade(TradePrint("AAA", t + timedelta(minutes=1), 99.99, 50, 100.0, 100.02))
-    second = flow.snapshot(now=t + timedelta(minutes=1))
-    assert second.cvd_session == 150
-    assert second.signed_delta == -50
+    side = flow.on_trade(TradePrint("AAA", t + timedelta(minutes=1), 99.99, 50, 100.0, 100.02))
+    cvd.on_trade(TradePrint("AAA", t + timedelta(minutes=1), 99.99, 50, 100.0, 100.02), side)
+    window = flow.snapshot(now=t + timedelta(minutes=1))
+    assert window.signed_delta == -50
+    assert cvd.features().cvd_session == 150
 
 
 def test_absorption_splits_buy_and_sell():
@@ -130,8 +136,9 @@ def test_breadth_exposes_structure_batch_a():
             realized_vol20_bps=10.0,
             relative_volume20=1.0,
             range_expansion=1.0,
-            flow=FlowFeatures(cvd_session=weight * 100),
-            structure=StructureFeatures(structure_state=state),
+            flow=FlowFeatures(),
+            structure=StructureFeatures(structure_state=state, structure_score=state / 2.0),
+            auction=AuctionFeatures(cvd_session=weight * 100),
         )
 
     factors = BreadthAggregator().aggregate(
@@ -148,8 +155,12 @@ def test_breadth_exposes_structure_batch_a():
     assert factors.structure_weighted is not None and factors.structure_weighted < 0
     assert factors.structure_divergence is not None and factors.structure_divergence > 0
     vector = vectorize(factors)
-    assert "structure_ew" in FEATURE_NAMES
+    assert "structure_ew" not in FEATURE_NAMES
+    assert "structure_ew" in names_for("structure_v1")
     assert vector.shape[0] == len(FEATURE_NAMES) + 2  # session fraction + fraction^2
+    challenger = vectorize(factors, feature_set="structure_v1")
+    assert challenger.shape[0] == len(FEATURE_SETS["structure_v1"]) + 2
+    assert challenger.shape[0] > vector.shape[0]
 
 
 def test_flow_payload_survives_store_roundtrip(tmp_path):
@@ -161,13 +172,11 @@ def test_flow_payload_survives_store_roundtrip(tmp_path):
         FlowFeatures(
             buy_volume=200,
             sell_volume=50,
-            cvd_session=150,
             buy_absorption=0.8,
             initiative_buy_efficiency=1.2,
         ),
     )
     loaded = store.flows_for_timestamp(t)["AAA"]
-    assert loaded.cvd_session == 150
     assert loaded.buy_absorption == 0.8
     assert loaded.initiative_buy_efficiency == 1.2
     store.close()
@@ -185,5 +194,5 @@ def test_engine_rebuilds_spy_auction_from_stored_prints(tmp_path):
     restarted.recover_spy_microstructure(t)
     features = restarted.auction.features(100.00, t)
     assert features.session_poc == 100.00
-    assert restarted.flows["SPY"].cvd_session == 4000
+    assert restarted.cvd["SPY"].cvd == 4000
     store.close()

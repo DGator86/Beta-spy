@@ -10,43 +10,12 @@ import numpy as np
 from sklearn.linear_model import SGDClassifier, SGDRegressor
 from sklearn.preprocessing import StandardScaler
 
+from .feature_sets import BASELINE_FEATURE_NAMES, names_for
 from .models import HorizonForecast, MarketFactors
 
-
-FEATURE_NAMES = (
-    "coverage_ratio",
-    "covered_weight",
-    "trend_ew",
-    "trend_weighted",
-    "momentum_ew",
-    "momentum_weighted",
-    "volume_ew",
-    "volume_weighted",
-    "flow_ew",
-    "flow_weighted",
-    "volatility_ew",
-    "volatility_weighted",
-    "pct_above_vwap",
-    "pct_ema_bullish",
-    "pct_positive_5m",
-    "pct_buy_flow",
-    "participation",
-    "concentration",
-    "breadth_acceleration",
-    "spy_return_1m",
-    "spy_return_5m",
-    "spy_vwap_distance_bps",
-    "spy_flow",
-    "spy_quote_imbalance",
-    "spy_spread_bps",
-    # Batch A — structure. Later families (effort/CVD/auction) stay off this
-    # vector until they survive incremental OOS tests.
-    "structure_ew",
-    "structure_weighted",
-    "pct_structure_bullish",
-    "pct_structure_bearish",
-    "structure_divergence",
-)
+# Production forecast vector. Experimental families live in feature_sets.py
+# and must not be appended here until they survive incremental OOS tests.
+FEATURE_NAMES = BASELINE_FEATURE_NAMES
 
 
 SESSION_OPEN_MINUTES = 13 * 60 + 30  # 13:30 UTC regular-session open
@@ -58,9 +27,10 @@ def session_fraction(timestamp: datetime) -> float:
     return float(min(max(minutes / SESSION_LENGTH_MINUTES, 0.0), 1.0))
 
 
-def vectorize(factors: MarketFactors) -> np.ndarray:
+def vectorize(factors: MarketFactors, feature_set: str = "baseline") -> np.ndarray:
     values = factors.feature_dict()
-    base = [values[name] for name in FEATURE_NAMES]
+    names = names_for(feature_set) if feature_set != "baseline" else FEATURE_NAMES
+    base = [values.get(name, 0.0) for name in names]
     # Intraday seasonality: opens and closes behave differently from lunch.
     fraction = session_fraction(factors.timestamp)
     base.append(fraction)
@@ -173,7 +143,7 @@ class OnlineHorizonModel:
     _classifier_initialized: bool = False
 
     def align_features(self, n_features: int) -> None:
-        """Drop a pickled model whose feature width no longer matches Batch A."""
+        """Drop a pickled model whose feature width no longer matches production."""
         expected = getattr(self.scaler, "n_features_in_", None)
         if expected is None or int(expected) == int(n_features):
             return
