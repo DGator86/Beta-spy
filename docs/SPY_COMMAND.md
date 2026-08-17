@@ -31,7 +31,7 @@ Runtime copies:
 Deploy the overview only:
 
 ```bash
-sudo ./scripts/deploy-spy-overview.sh
+sudo bash ./scripts/deploy-spy-overview.sh
 ```
 
 This deploy script intentionally does **not** touch `src/beta_spy/`.
