@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from .auction import SpyAuctionState
+from .auction import SessionCvd, SpyAuctionState, attach_cvd
 from .breadth import BreadthAggregator
 from .decision import DecisionEngine
 from .flow import FlowAccumulator
@@ -119,6 +119,7 @@ class Tape500Engine:
         self.decisions = decision_engine or DecisionEngine()
         self.meta_gate = OnlineMetaGate()
         self.auction = SpyAuctionState()
+        self.cvd: dict[str, SessionCvd] = defaultdict(SessionCvd)
         self._spy_micro_recovered = False
 
     @classmethod
@@ -178,8 +179,8 @@ class Tape500Engine:
     def recover_spy_microstructure(self, timestamp: datetime) -> None:
         """Rebuild SPY auction + session CVD from stored prints after a restart.
 
-        Constituent CVD stays compressed in minute_flow.payload. Only SPY has
-        the tick tape needed for a true volume-at-price profile.
+        Only SPY has the tick tape needed for a true volume-at-price profile.
+        Constituent CVD is compressed into AuctionFeatures / minute_flow.payload.
         """
         if self.store is None or self._spy_micro_recovered or self.auction.bins:
             return
@@ -188,14 +189,11 @@ class Tape500Engine:
         for trade in self.store.iter_spy_trades(timestamp.date()):
             side = scratch.on_trade(trade)
             self.auction.on_trade(trade, side)
+            self.cvd["SPY"].on_trade(trade, side)
             count += 1
         if count == 0:
             return
-        spy_flow = self.flows["SPY"]
-        spy_flow.cvd_session = scratch.cvd_session
-        spy_flow._cvd_marks = scratch._cvd_marks
-        spy_flow.session_date = scratch.session_date
-        spy_flow.last_trade_price = scratch.last_trade_price
+        self.flows["SPY"].last_trade_price = scratch.last_trade_price
         self._spy_micro_recovered = True
 
     def on_quote(self, quote: QuoteTop) -> None:
@@ -213,6 +211,7 @@ class Tape500Engine:
 
     def on_trade(self, trade: TradePrint) -> None:
         side = self.flows[trade.symbol].on_trade(trade)
+        self.cvd[trade.symbol].on_trade(trade, side)
         if trade.symbol == "SPY":
             self.auction.on_trade(trade, side)
         bucket = _minute_key(trade.timestamp)
@@ -293,7 +292,11 @@ class Tape500Engine:
         symbol_features: list[SymbolFeatures] = []
         for symbol, state in self.states.items():
             flow = self.flow_overrides.get(symbol) or self.flows[symbol].snapshot(now=timestamp)
-            auction = self.auction.features(state.bars[-1].close, timestamp) if symbol == "SPY" and state.bars else None
+            cvd = self.cvd[symbol].features(timestamp)
+            if symbol == "SPY" and state.bars:
+                auction = attach_cvd(self.auction.features(state.bars[-1].close, timestamp), cvd)
+            else:
+                auction = cvd
             feature = state.features(flow, timestamp, auction=auction)
             if feature is not None:
                 symbol_features.append(feature)

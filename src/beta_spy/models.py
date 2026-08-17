@@ -62,14 +62,6 @@ class FlowFeatures:
     quote_updates: int = 0
     trades: int = 0
     signed_delta: float | None = None
-    cvd_session: float | None = None
-    cvd_5m: float | None = None
-    cvd_15m: float | None = None
-    cvd_slope_5m: float | None = None
-    cvd_slope_15m: float | None = None
-    cvd_zscore: float | None = None
-    price_cvd_divergence_5m: float | None = None
-    price_cvd_divergence_15m: float | None = None
     signed_aggressive_volume: float | None = None
     directional_volume: float | None = None
     price_displacement_bps: float | None = None
@@ -95,11 +87,18 @@ class StructureFeatures:
     swing_prominence_5: float | None = None
     swing_prominence_9: float | None = None
     swing_prominence_17: float | None = None
+    swing_prominence_33: float | None = None
     distance_to_last_swing_high_atr: float | None = None
     distance_to_last_swing_low_atr: float | None = None
     structure_state: float | None = None
+    structure_score: float | None = None
     structure_break_strength: float | None = None
     failed_break_strength: float | None = None
+    nfs_direction: float | None = None
+    nfs_break_atr: float | None = None
+    nfs_duration: float | None = None
+    nfs_displacement_efficiency: float | None = None
+    nfs_relative_volume: float | None = None
     upper_wick_ratio: float | None = None
     lower_wick_ratio: float | None = None
     body_ratio: float | None = None
@@ -115,6 +114,14 @@ class StructureFeatures:
 
 @dataclass(frozen=True)
 class AuctionFeatures:
+    cvd_session: float | None = None
+    cvd_5m: float | None = None
+    cvd_15m: float | None = None
+    cvd_slope_5m: float | None = None
+    cvd_slope_15m: float | None = None
+    cvd_zscore: float | None = None
+    price_cvd_divergence_5m: float | None = None
+    price_cvd_divergence_15m: float | None = None
     session_poc: float | None = None
     session_vah: float | None = None
     session_val: float | None = None
@@ -231,6 +238,14 @@ class MarketFactors:
     pct_sell_absorption: float | None = None
     pct_bullish_sweep: float | None = None
     pct_bearish_sweep: float | None = None
+    sweep_ew: float | None = None
+    sweep_weighted: float | None = None
+    acceptance_ew: float | None = None
+    acceptance_weighted: float | None = None
+    initiative_ew: float | None = None
+    initiative_weighted: float | None = None
+    pct_breaking_highs: float | None = None
+    pct_breaking_lows: float | None = None
     spy_cvd: float | None = None
     spy_cvd_divergence: float | None = None
     spy_poc_distance: float | None = None
@@ -269,11 +284,21 @@ class MarketFactors:
             "pct_structure_bullish": self.pct_structure_bullish,
             "pct_structure_bearish": self.pct_structure_bearish,
             "structure_divergence": self.structure_divergence,
+            "sweep_ew": self.sweep_ew,
+            "sweep_weighted": self.sweep_weighted,
+            "acceptance_ew": self.acceptance_ew,
+            "acceptance_weighted": self.acceptance_weighted,
+            "initiative_ew": self.initiative_ew,
+            "initiative_weighted": self.initiative_weighted,
+            "pct_breaking_highs": self.pct_breaking_highs,
+            "pct_breaking_lows": self.pct_breaking_lows,
             "absorption_ew": self.absorption_ew,
             "absorption_weighted": self.absorption_weighted,
             "cvd_ew": self.cvd_ew,
             "cvd_weighted": self.cvd_weighted,
             "pct_positive_cvd": self.pct_positive_cvd,
+            "pct_buy_absorption": self.pct_buy_absorption,
+            "pct_sell_absorption": self.pct_sell_absorption,
             "spy_cvd": self.spy_cvd,
             "spy_cvd_divergence": self.spy_cvd_divergence,
             "spy_poc_distance": self.spy_poc_distance,
