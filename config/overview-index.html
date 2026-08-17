@@ -2,379 +2,50 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>SPY Trading — Overview</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#07090d">
+<title>SPY Command</title>
 <style>
-  :root{--bg:#0b0e14;--card:#131824;--line:#1f2637;--text:#dbe2f0;--dim:#7d89a3;--pos:#3ecf8e;--neg:#ff6b6b;--warn:#ffb454;--blue:#6ea8fe}
-  *{box-sizing:border-box;margin:0;padding:0}
-  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:16px;max-width:1200px;margin:0 auto}
-  header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px;margin-bottom:14px}
-  .brand h1{font-size:18px;letter-spacing:.5px}
-  .brand .updated{color:var(--dim);font-size:11px}
-  .spy{display:flex;align-items:baseline;gap:10px}
-  .spy .px{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums}
-  .spy .chg{font-size:14px;font-weight:600}
-  .spy .sess{font-size:11px;color:var(--dim);text-align:right}
-  header nav a{color:var(--blue);text-decoration:none;margin-left:14px;font-size:13px}
-  .badges{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
-  .badge{font-size:11px;padding:3px 12px;border-radius:99px;border:1px solid var(--line);letter-spacing:.5px;color:var(--dim)}
-  .badge.ok{color:var(--pos);border-color:var(--pos)}
-  .badge.bad{color:var(--neg);border-color:var(--neg)}
-  .badge.warn{color:var(--warn);border-color:var(--warn)}
-  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px}
-  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
-  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:1px;color:var(--dim);margin-bottom:10px;display:flex;justify-content:space-between;align-items:center}
-  .kv{display:grid;grid-template-columns:1fr auto;gap:3px 12px;font-size:13px}
-  .kv label{color:var(--dim)}
-  .kv b{font-weight:600;text-align:right;font-variant-numeric:tabular-nums}
-  .pos{color:var(--pos)} .neg{color:var(--neg)} .dim{color:var(--dim)} .warn{color:var(--warn)}
-  .gates{display:grid;grid-template-columns:repeat(auto-fill,minmax(128px,1fr));gap:5px;margin:8px 0}
-  .gate{display:flex;align-items:center;gap:6px;font-size:11px;color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
-  .dot{width:7px;height:7px;border-radius:99px;background:var(--neg);flex:none}
-  .dot.up{background:var(--pos)}
-  .dot.na{background:var(--dim)}
-  .fc{margin:4px 0}
-  .fc .lbl{display:flex;justify-content:space-between;font-size:11px;color:var(--dim)}
-  .bar{position:relative;height:8px;background:var(--bg);border:1px solid var(--line);border-radius:5px;overflow:hidden;margin-top:2px}
-  .bar .mid{position:absolute;left:50%;top:0;bottom:0;width:1px;background:var(--line)}
-  .bar .fill{position:absolute;top:0;bottom:0;border-radius:4px}
-  .services{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:5px;margin-top:4px}
-  .svc{display:flex;align-items:center;gap:7px;font-size:11px;color:var(--dim);background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:4px 8px}
-  pre{background:var(--bg);border:1px solid var(--line);border-radius:6px;padding:7px 9px;font-size:10.5px;color:var(--dim);overflow-x:auto;margin-top:8px;white-space:pre-wrap}
-  table{width:100%;border-collapse:collapse;font-size:12px;margin-top:6px;display:block;overflow-x:auto}
-  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
-  th{color:var(--dim);font-weight:500;font-size:11px}
-  td:last-child,th:last-child{text-align:right}
-  .wide{grid-column:1/-1}
-  svg{display:block;width:100%}
-  .chartlbl{font-size:10.5px;color:var(--dim);margin-top:2px;display:flex;justify-content:space-between}
-  .reason{font-size:12px;color:var(--warn);margin-top:4px}
-  footer{margin-top:14px;color:var(--dim);font-size:11px}
-  @media(max-width:640px){.spy .px{font-size:24px}}
+:root{color-scheme:dark;--bg:#07090d;--panel:#0d1118;--panel2:#111721;--line:#202a39;--line2:#2c394d;--ink:#eef3fa;--muted:#8592a6;--dim:#5e6b7e;--alpha:#35d9ff;--beta:#9c7cff;--pass:#2de0a5;--watch:#ffc65c;--fail:#ff5f78;--sidebar:216px;--r:11px}*{box-sizing:border-box}html,body{margin:0;min-height:100%;background:radial-gradient(1000px 480px at 75% -5%,rgba(53,217,255,.07),transparent 65%),var(--bg);color:var(--ink);font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}body{font-size:12px}button,a{font:inherit}.mono,.num,td,.value{font-variant-numeric:tabular-nums lining-nums}.app{min-height:100vh}.side{position:fixed;z-index:30;inset:0 auto 0 0;width:var(--sidebar);padding:17px 11px 12px;background:linear-gradient(180deg,#0a0d12,#07090d);border-right:1px solid var(--line);display:flex;flex-direction:column}.brand{display:flex;align-items:center;gap:10px;padding:5px 7px 20px}.mark{width:34px;height:34px;border:1px solid rgba(53,217,255,.3);border-radius:9px;display:grid;place-items:center;background:linear-gradient(135deg,rgba(53,217,255,.15),rgba(156,124,255,.12));font-weight:900}.brand b{display:block;letter-spacing:.13em;font-size:12px}.brand small{display:block;color:var(--dim);font:8px monospace;letter-spacing:.14em;margin-top:4px}.nav-label{color:#526075;font:8px monospace;letter-spacing:.15em;text-transform:uppercase;padding:10px 10px 5px}.nav{display:grid;gap:3px}.nav button{border:0;background:transparent;color:#9da9ba;text-align:left;padding:9px 10px;border-radius:7px;cursor:pointer;display:flex;align-items:center;gap:10px}.nav button:hover{background:#10151e;color:#fff}.nav button.active{background:linear-gradient(90deg,rgba(53,217,255,.11),transparent);box-shadow:inset 2px 0 var(--alpha);color:#fff}.nav i{font-style:normal;width:17px;text-align:center;color:#69788e}.side-foot{margin-top:auto;border-top:1px solid var(--line);padding:11px 8px 2px;color:#69768a;font:9px/1.45 monospace}.statusline{display:flex;align-items:center;gap:7px;color:#a7b2c2;margin-bottom:7px}.dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:#536073}.dot.ok{background:var(--pass);box-shadow:0 0 12px rgba(45,224,165,.45)}.dot.warn{background:var(--watch);box-shadow:0 0 12px rgba(255,198,92,.38)}.dot.bad{background:var(--fail);box-shadow:0 0 12px rgba(255,95,120,.4)}main{margin-left:var(--sidebar);min-height:100vh}.top{position:sticky;top:0;z-index:20;height:56px;border-bottom:1px solid var(--line);background:rgba(7,9,13,.88);backdrop-filter:blur(15px);display:flex;justify-content:space-between;align-items:center;padding:0 16px;gap:14px}.top-left,.top-right{display:flex;align-items:center;gap:10px}.ticker{font-weight:850;letter-spacing:.08em}.price{font-size:18px;font-weight:760}.move{font:10px monospace}.sep{width:1px;height:22px;background:var(--line)}.tiny{font:9px monospace;color:#7c899b}.tiny b{color:#cbd4e1}.pill{display:flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:5px 7px;color:#8e9bad;font:8px monospace;letter-spacing:.04em}.pill.alpha{color:var(--alpha);border-color:rgba(53,217,255,.2)}.pill.beta{color:#b5a4ff;border-color:rgba(156,124,255,.22)}.clock{font:9px monospace;color:#657388}.content{max-width:1900px;margin:auto;padding:11px}.view{display:none}.view.active{display:block}.page-head{display:flex;justify-content:space-between;align-items:end;gap:15px;margin:4px 2px 10px}.page-head h1{font-size:18px;margin:0}.page-head p{font-size:10px;color:#758399;margin:5px 0 0}.tools{display:flex;gap:6px}.btn{border:1px solid var(--line);background:#0e131b;color:#aab5c5;border-radius:7px;padding:7px 9px;text-decoration:none;cursor:pointer;font-size:9px}.btn:hover{border-color:#3a4a62;color:#fff}.btn.alpha{color:var(--alpha)}.btn.beta{color:#baaaff}.grid{display:grid;gap:9px}.g2{grid-template-columns:repeat(2,minmax(0,1fr))}.g3{grid-template-columns:repeat(3,minmax(0,1fr))}.hero{grid-template-columns:minmax(0,1.65fr) minmax(315px,.78fr)}.panel{background:linear-gradient(180deg,#10151e,#0c1017);border:1px solid var(--line);border-radius:var(--r);overflow:hidden;box-shadow:0 14px 55px rgba(0,0,0,.22);min-width:0}.panel.alpha-edge{box-shadow:inset 0 2px rgba(53,217,255,.42),0 14px 55px rgba(0,0,0,.22)}.panel.beta-edge{box-shadow:inset 0 2px rgba(156,124,255,.5),0 14px 55px rgba(0,0,0,.22)}.ph{min-height:44px;padding:9px 11px;border-bottom:1px solid var(--line);display:flex;align-items:center;justify-content:space-between;gap:10px}.kicker{color:#66758a;font:8px monospace;text-transform:uppercase;letter-spacing:.13em}.ph h2,.ph h3{font-size:11px;margin:4px 0 0}.pa{font:8px monospace;color:#68768a}.pb{padding:11px}.section{display:flex;align-items:flex-end;justify-content:space-between;margin:15px 2px 7px}.section b{font-size:12px;letter-spacing:.04em}.section span{color:#637186;font:8px monospace}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;background:var(--line)}.metric{background:#0d1118;padding:10px 11px;min-width:0}.label{color:#68768b;font:8px monospace;text-transform:uppercase;letter-spacing:.1em;white-space:nowrap}.value{font-size:17px;font-weight:740;margin-top:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.hint{color:#6f7e92;font:8px monospace;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.pos{color:var(--pass)!important}.neg{color:var(--fail)!important}.watch{color:var(--watch)!important}.ac{color:var(--alpha)!important}.bc{color:#b6a4ff!important}.muted{color:var(--muted)!important}.chart{height:380px;position:relative;background:linear-gradient(180deg,rgba(53,217,255,.015),transparent 50%)}canvas{width:100%;height:100%;display:block}.legend{position:absolute;left:11px;top:9px;display:flex;gap:6px;pointer-events:none}.legend span{padding:4px 6px;background:rgba(6,8,12,.75);border:1px solid rgba(255,255,255,.06);border-radius:5px;font:8px monospace}.consensus{height:100%}.scorebox{text-align:center;padding:15px;border-bottom:1px solid var(--line)}.ring{width:118px;height:118px;margin:0 auto 10px;border-radius:50%;display:grid;place-items:center;position:relative;background:conic-gradient(var(--pass) 0deg,#202a39 0deg)}.ring:after{content:"";position:absolute;inset:8px;border-radius:50%;background:#0d1118;border:1px solid #263143}.ring div{z-index:1}.ring b{display:block;font-size:28px}.ring small{font:8px monospace;color:#69778b;letter-spacing:.12em}.state{font-size:12px;font-weight:780;letter-spacing:.04em}.duo{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--line)}.engine{padding:11px}.engine+.engine{border-left:1px solid var(--line)}.ename{font:8px monospace;letter-spacing:.13em}.edir{font-size:16px;font-weight:760;margin-top:7px}.emeta{font:8px monospace;color:#6e7d91;margin-top:4px}.compare{padding:7px 11px}.crow{display:grid;grid-template-columns:42px 1fr 1fr 46px;gap:7px;padding:7px 0;border-bottom:1px solid rgba(32,42,57,.72);font:8px monospace;align-items:center}.crow:last-child{border:0}.match{border:1px solid var(--line);border-radius:4px;padding:3px;text-align:center;color:#69778a}.match.y{color:var(--pass);border-color:rgba(45,224,165,.2)}.match.n{color:var(--fail);border-color:rgba(255,95,120,.2)}.decision{display:grid;grid-template-columns:205px 1fr;min-height:160px}.dmain{padding:15px;border-right:1px solid var(--line);display:flex;justify-content:center;flex-direction:column}.dmain small{font:8px monospace;color:#6d7a8d;letter-spacing:.12em}.daction{font-size:20px;font-weight:800;margin-top:7px}.dreason{font-size:9px;line-height:1.5;color:#8794a6;margin-top:8px}.gates{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:6px;padding:11px}.gate{border:1px solid var(--line);border-radius:7px;padding:8px;background:#0a0e14;min-height:53px}.gate.pass{border-color:rgba(45,224,165,.18);background:rgba(45,224,165,.025)}.gate.fail{border-color:rgba(255,95,120,.22);background:rgba(255,95,120,.03)}.gate b{font-size:9px;text-transform:capitalize;display:flex;gap:6px;align-items:center}.gate i{width:6px;height:6px;border-radius:50%;background:#59667a}.gate.pass i{background:var(--pass)}.gate.fail i{background:var(--fail)}.gate small{display:block;color:#69778a;font:8px/1.35 monospace;margin-top:5px}.feed{max-height:235px;overflow:auto}.alert{display:grid;grid-template-columns:7px 1fr auto;gap:8px;padding:9px 11px;border-bottom:1px solid var(--line)}.alert:last-child{border:0}.alert i{width:6px;height:6px;border-radius:50%;background:var(--alpha);margin-top:4px}.alert.warning i{background:var(--watch)}.alert.critical i{background:var(--fail)}.alert b{font-size:9px}.alert p{font-size:8px;line-height:1.4;color:#78869a;margin:3px 0 0}.alert time{font:8px monospace;color:#59677a}.empty{padding:20px;text-align:center;color:#667489;font:9px/1.5 monospace}.forecasts{display:grid;grid-template-columns:repeat(auto-fit,minmax(126px,1fr));gap:6px}.fc{border:1px solid var(--line);border-radius:8px;padding:9px;background:#0a0e14}.fctop{display:flex;justify-content:space-between;color:#68768a;font:8px monospace}.fcdir{font-size:14px;font-weight:760;margin:8px 0 6px}.meter{height:5px;background:#1b2432;border-radius:999px;overflow:hidden}.meter i{display:block;height:100%;background:var(--alpha);border-radius:999px}.meter.beta i{background:var(--beta)}.fcfoot{display:flex;justify-content:space-between;color:#6f7e91;font:8px monospace;margin-top:6px}.regimes{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line)}.regime{background:#0d1118;padding:11px}.regime small{color:#617086;font:8px monospace;text-transform:uppercase}.regime b{display:block;margin-top:5px;font-size:11px}.regime p{font-size:8px;line-height:1.4;color:#748298;margin:5px 0 0}.tablewrap{overflow:auto}.table{border-collapse:collapse;width:100%;font-size:9px}.table th{background:#0d1118;color:#617086;font:8px monospace;text-transform:uppercase;letter-spacing:.09em;text-align:left;padding:8px 9px;border-bottom:1px solid var(--line);white-space:nowrap}.table td{padding:8px 9px;border-bottom:1px solid rgba(32,42,57,.7);color:#aab5c4;white-space:nowrap}.table tr:last-child td{border:0}.strategy{color:#edf3fb!important;font-weight:650}.chip{display:inline-block;border:1px solid var(--line);border-radius:4px;padding:3px 5px;font:8px monospace}.heat{display:grid;grid-template-columns:repeat(25,minmax(11px,1fr));gap:2px}.cell{border:0;border-radius:2px;aspect-ratio:1;background:#1b2431;cursor:pointer;min-width:0}.cell:hover{outline:1px solid #fff;z-index:2}.heatlegend{display:flex;gap:10px;color:#68768b;font:8px monospace}.heatlegend span{display:flex;align-items:center;gap:5px}.heatlegend i{width:11px;height:6px;border-radius:2px}.barrow{display:grid;grid-template-columns:100px 1fr 52px;gap:7px;align-items:center;padding:6px 0}.barrow label{font-size:8px;color:#8491a4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.barrow b{font:8px monospace;text-align:right}.servicegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:7px}.service{border:1px solid var(--line);background:#0a0e14;border-radius:8px;padding:9px}.servtop{display:flex;justify-content:space-between;align-items:center}.service b{font-size:9px}.service small{display:block;color:#67758a;font:8px/1.4 monospace;margin-top:6px}.kv{display:grid;grid-template-columns:1fr auto;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:8px}.kv:last-child{border:0}.kv span{color:#78869a}.kv b{font-family:monospace;max-width:300px;overflow:hidden;text-overflow:ellipsis}.drawer{position:fixed;z-index:60;inset:0 0 0 auto;width:min(420px,94vw);background:#0a0e14;border-left:1px solid var(--line);box-shadow:-20px 0 70px #0008;transform:translateX(102%);transition:.18s;display:flex;flex-direction:column}.drawer.open{transform:none}.drawhead{padding:15px;border-bottom:1px solid var(--line);display:flex;justify-content:space-between}.drawbody{padding:13px;overflow:auto}.close{border:0;background:transparent;color:#8492a5;font-size:19px;cursor:pointer}
+@media(max-width:1250px){.hero{grid-template-columns:1fr}.gates{grid-template-columns:repeat(3,1fr)}.heat{grid-template-columns:repeat(20,1fr)}}@media(max-width:900px){:root{--sidebar:0}.side{display:none}main{margin:0}.top{padding:0 9px}.top .tiny,.top .sep,.top-right .pill{display:none}.content{padding:8px}.g2,.g3{grid-template-columns:1fr}.metrics{grid-template-columns:repeat(2,1fr)}.decision{grid-template-columns:1fr}.dmain{border-right:0;border-bottom:1px solid var(--line)}.gates{grid-template-columns:repeat(2,1fr)}.regimes{grid-template-columns:repeat(2,1fr)}.heat{grid-template-columns:repeat(16,1fr)}.chart{height:320px}}@media(max-width:540px){.gates{grid-template-columns:1fr}.duo{grid-template-columns:1fr}.engine+.engine{border-left:0;border-top:1px solid var(--line)}.crow{grid-template-columns:40px 1fr 1fr}.crow .match{display:none}.heat{grid-template-columns:repeat(12,1fr)}.chart{height:275px}.page-head{align-items:start}.page-head p{max-width:240px}}
 </style>
 </head>
 <body>
-<header>
-  <div class="brand">
-    <h1>SPY Trading Overview</h1>
-    <span class="updated" id="updated">loading…</span>
-  </div>
-  <div class="spy">
-    <span class="px" id="spyPx">—</span>
-    <span class="chg" id="spyChg"></span>
-    <span class="sess" id="sessInfo">—</span>
-  </div>
-  <nav>
-    <a href="#" id="alphaLink" target="_blank">Alpha dash →</a>
-    <a href="#" id="betaLink" target="_blank">Beta dash →</a>
-  </nav>
-</header>
+<div class="app">
+<aside class="side"><div class="brand"><div class="mark">S</div><div><b>SPY COMMAND</b><small>DUAL-ENGINE TERMINAL</small></div></div><div class="nav-label">Operate</div><nav class="nav"><button class="active" data-view="command"><i>⌁</i>Command</button><button data-view="alpha"><i>α</i>Alpha</button><button data-view="beta"><i>β</i>Beta</button></nav><div class="nav-label">Evaluate</div><nav class="nav"><button data-view="performance"><i>◫</i>Performance</button><button data-view="system"><i>◇</i>System</button></nav><div class="side-foot"><div class="statusline"><i id="sideDot" class="dot"></i><span id="sideStatus">CONNECTING</span></div>Read-only operations layer. Alpha and Beta remain independent engines.</div></aside>
+<main><header class="top"><div class="top-left"><span class="ticker">SPY</span><span id="topPrice" class="price">—</span><span id="topMove" class="move">—</span><span class="sep"></span><span class="tiny">BID <b id="topBid">—</b></span><span class="tiny">ASK <b id="topAsk">—</b></span><span class="tiny">SESSION <b id="topSession">—</b></span></div><div class="top-right"><span class="pill alpha"><i id="alphaDot" class="dot"></i>ALPHA</span><span class="pill beta"><i id="betaDot" class="dot"></i>BETA</span><span id="marketPill" class="pill">MARKET —</span><span id="clock" class="clock">—</span></div></header>
+<div class="content">
+<section id="command" class="view active"><div class="page-head"><div><h1>Command</h1><p>Live SPY state, independent engine posture, qualification and divergence.</p></div><div class="tools"><button id="refresh" class="btn">Refresh</button></div></div><div class="grid hero"><article class="panel"><div class="ph"><div><div class="kicker">Observed market + model overlays</div><h2>SPY Live Canvas</h2></div><span id="chartInfo" class="pa">—</span></div><div class="chart"><canvas id="chart"></canvas><div class="legend"><span>SPY</span><span class="ac">α 15m</span><span class="bc">β 15m</span></div></div></article><article class="panel consensus"><div class="ph"><div><div class="kicker">Independent engine comparison</div><h2>Alpha × Beta</h2></div><span class="pa">OBSERVATIONAL</span></div><div class="scorebox"><div id="ring" class="ring"><div><b id="score">—</b><small>AGREEMENT</small></div></div><div id="cstate" class="state">—</div><div id="cmethod" class="hint">Live agreement index</div></div><div class="duo"><div class="engine"><div class="ename ac">ALPHA</div><div id="adir" class="edir">—</div><div id="ameta" class="emeta">—</div></div><div class="engine"><div class="ename bc">BETA</div><div id="bdir" class="edir">—</div><div id="bmeta" class="emeta">—</div></div></div><div id="comparison" class="compare"></div></article></div>
+<div class="section"><b>Decision Stack</b><span>why the system is or is not acting</span></div><article class="panel"><div class="decision"><div class="dmain"><small>ALPHA EXECUTION DECISION</small><div id="daction" class="daction">—</div><div id="dreason" class="dreason">Waiting for Alpha.</div></div><div id="commandGates" class="gates"></div></div></article>
+<div class="section"><b>Operating Picture</b><span>regime, tape, alerts</span></div><div class="grid g3"><article class="panel alpha-edge"><div class="ph"><div><div class="kicker">Alpha context</div><h3>Regime & Risk</h3></div></div><div id="alphaQuick" class="metrics"></div></article><article class="panel beta-edge"><div class="ph"><div><div class="kicker">500-name sensor network</div><h3>Beta Tape</h3></div></div><div id="betaQuick" class="metrics"></div></article><article class="panel"><div class="ph"><div><div class="kicker">Live operations</div><h3>Alerts</h3></div><span id="alertCount" class="pa">0</span></div><div id="alerts" class="feed"></div></article></div>
+<div class="section"><b>Position</b><span>Alpha-managed exposure</span></div><article class="panel"><div id="position"></div></article></section>
 
-<div class="badges">
-  <span class="badge" id="betaBadge">BETA …</span>
-  <span class="badge" id="alphaBadge">ALPHA …</span>
-  <span class="badge" id="opsBadge">OPS …</span>
-  <span class="badge" id="agreeBadge">AGREEMENT …</span>
-  <span class="badge" id="tapeBadge">TAPE …</span>
-</div>
+<section id="alpha" class="view"><div class="page-head"><div><h1>Alpha</h1><p>Probabilistic forecast, regime hierarchy, option candidates, gates and audit.</p></div><a id="openAlpha" class="btn alpha" target="_blank" rel="noopener">Open full Alpha ↗</a></div><article class="panel"><div id="alphaHero" class="metrics"></div></article><div class="section"><b>Forecast Term Structure</b><span>physical distribution by horizon</span></div><article class="panel"><div class="pb"><div id="alphaForecasts" class="forecasts"></div></div></article><div class="section"><b>Regime Hierarchy</b><span>micro → structural</span></div><article class="panel"><div id="regimes" class="regimes"></div></article><div class="section"><b>Entry Gates</b><span>fail closed</span></div><article class="panel"><div id="alphaGates" class="gates"></div></article><div class="section"><b>Candidate Book</b><span>ranked option expressions</span></div><article class="panel"><div class="tablewrap"><table class="table"><thead><tr><th>Strategy</th><th>Status</th><th>Score</th><th>EV</th><th>POP</th><th>Max Loss</th><th>Q Edge</th><th>Stress EV</th></tr></thead><tbody id="candidates"></tbody></table></div></article><div class="section"><b>Validation & Services</b><span>quality + operational health</span></div><div class="grid g2"><article class="panel"><div id="alphaAudit" class="metrics"></div></article><article class="panel"><div class="ph"><div><div class="kicker">Alpha engine</div><h3>Services</h3></div></div><div class="pb"><div id="alphaServices" class="servicegrid"></div></div></article></div></section>
 
-<div class="grid">
-  <section class="card">
-    <h2>Beta-spy Decision <span id="betaAction" style="color:var(--text)">—</span></h2>
-    <div class="reason" id="betaReason"></div>
-    <div class="gates" id="betaGatesGrid"></div>
-    <div id="betaForecasts"></div>
-    <div class="kv" style="margin-top:8px">
-      <label>Risk multiplier</label><b id="betaRiskMult">—</b>
-      <label>Stream events / reconnects</label><b id="betaStream">—</b>
-      <label>Last tick</label><b id="betaLastTick">—</b>
-    </div>
-  </section>
+<section id="beta" class="view"><div class="page-head"><div><h1>Beta</h1><p>Constituent sensor matrix, breadth, flow, sectors and causal SPY forecasts.</p></div><a id="openBeta" class="btn beta" target="_blank" rel="noopener">Open full Beta ↗</a></div><article class="panel"><div id="betaHero" class="metrics"></div></article><div class="section"><b>Forecast Stack</b><span>5 / 15 / 30 minute outcomes</span></div><article class="panel"><div class="pb"><div id="betaForecasts" class="forecasts"></div></div></article><div class="section"><b>S&P 500 Sensor Matrix</b><span id="heatInfo">constituent state</span></div><article class="panel"><div class="ph"><div class="heatlegend"><span><i style="background:#ff5f7899"></i>bearish</span><span><i style="background:#263143"></i>neutral</span><span><i style="background:#2de0a599"></i>bullish</span></div><span class="pa">CLICK CELL</span></div><div class="pb"><div id="heat" class="heat"></div></div></article><div class="section"><b>Sector Tape</b><span>participation and pressure</span></div><div class="grid g2"><article class="panel"><div id="sectorBars" class="pb"></div></article><article class="panel"><div class="tablewrap"><table class="table"><thead><tr><th>Sector</th><th>Names</th><th>Weight</th><th>Trend</th><th>Momentum</th><th>Flow</th><th>Participation</th></tr></thead><tbody id="sectors"></tbody></table></div></article></div><div class="section"><b>Decision Gates</b><span>NO_TRADE is normal</span></div><article class="panel"><div id="betaGates" class="gates"></div></article></section>
 
-  <section class="card">
-    <h2>Alpha-spy <span class="badge" id="alphaHealth">…</span></h2>
-    <svg id="alphaSpark" viewBox="0 0 300 60" preserveAspectRatio="none" height="60"></svg>
-    <div class="chartlbl"><span id="sparkLow"></span><span>last ~2 min</span><span id="sparkHigh"></span></div>
-    <div class="kv" style="margin-top:8px">
-      <label>Decision</label><b id="alphaAction">—</b>
-      <label>Trust score</label><b id="alphaTrust">—</b>
-      <label>P(up) 5m / 15m / 30m</label><b id="alphaProbs">—</b>
-      <label>Account equity</label><b id="alphaEquity">—</b>
-      <label>Day P&amp;L</label><b id="alphaDayPnl">—</b>
-      <label>Position open</label><b id="alphaPosition">—</b>
-    </div>
-  </section>
+<section id="performance" class="view"><div class="page-head"><div><h1>Performance</h1><p>Forecast quality stays separate from trade outcomes; consensus is not promoted without validation.</p></div></div><div class="section"><b>Alpha Forecast Audit</b><span>live audit</span></div><article class="panel"><div id="perfAlpha" class="metrics"></div></article><div class="section"><b>Beta Causal Backtest</b><span id="reportPath">latest report</span></div><article class="panel"><div class="tablewrap"><table class="table"><thead><tr><th>Horizon</th><th>Obs</th><th>Ready</th><th>Accuracy</th><th>Ready Accuracy</th><th>Brier</th><th>Ready Brier</th><th>Return MAE</th></tr></thead><tbody id="perfBeta"></tbody></table></div></article><div class="section"><b>Beta Decision Layer</b><span>qualified signal quality</span></div><article class="panel"><div id="decisionPerf" class="metrics"></div></article><div class="section"><b>Current Cross-Engine Read</b><span>descriptive, not yet a historical strategy</span></div><article class="panel"><div id="consensusPerf" class="metrics"></div></article></section>
 
-  <section class="card">
-    <h2>Paper Account <span id="ledgerEquityHead" style="color:var(--text)">—</span></h2>
-    <svg id="equityCurve" viewBox="0 0 300 70" preserveAspectRatio="none" height="70"></svg>
-    <div class="chartlbl"><span>equity curve (realized)</span><span id="curveRange"></span></div>
-    <svg id="dailyBars" viewBox="0 0 300 46" preserveAspectRatio="none" height="46" style="margin-top:8px"></svg>
-    <div class="chartlbl"><span>daily P&amp;L</span><span id="dailyRange"></span></div>
-    <div class="kv" style="margin-top:8px">
-      <label>Day / total realized</label><b id="ledgerPnls">—</b>
-      <label>Win rate</label><b id="ledgerWinRate">—</b>
-      <label>Risk budget / trade</label><b id="ledgerBudget">—</b>
-      <label>Loss streak · breaker</label><b id="ledgerRisk">—</b>
-    </div>
-  </section>
-
-  <section class="card">
-    <h2>Scoreboard — do they work? <span class="dim">15m calls vs real SPY tape</span></h2>
-    <table>
-      <thead><tr><th></th><th>Graded</th><th>Hit rate</th><th>Decisive</th><th>Avg bps</th></tr></thead>
-      <tbody>
-        <tr><td><b>Beta trades</b> <span class="dim">(after gates)</span></td><td id="sbGatedN">—</td><td id="sbGatedAcc">—</td><td id="sbGatedDec">—</td><td id="sbGatedBps">—</td></tr>
-        <tr class="dim"><td>Beta raw model</td><td id="sbBetaN">—</td><td id="sbBetaAcc">—</td><td id="sbBetaDec">—</td><td id="sbBetaBps">—</td></tr>
-        <tr><td><b>Alpha-spy</b></td><td id="sbAlphaN">—</td><td id="sbAlphaAcc">—</td><td id="sbAlphaDec">—</td><td id="sbAlphaBps">—</td></tr>
-      </tbody>
-    </table>
-    <div class="chartlbl" style="margin-top:6px"><span>Beta trades by day</span><span id="sbGatedDays" style="text-align:right">—</span></div>
-    <div class="chartlbl"><span>Alpha by day</span><span id="sbAlphaDays" style="text-align:right">—</span></div>
-    <div class="chartlbl" style="margin-top:4px"><span class="dim">Every fresh 15-minute call is graded against what SPY actually did 15 minutes later. "Beta trades" = only signals that passed all gates — the ones the ledger acts on. The raw model runs near a coin flip by design; the gates concentrate the edge. Alpha grading starts from its first recorded live session.</span></div>
-  </section>
-
-  <section class="card">
-    <h2>Blotter <span class="dim" id="blotterCount"></span></h2>
-    <table>
-      <thead><tr><th>Strategy</th><th>Dir</th><th>Status / Exit</th><th>When</th><th>P&amp;L</th></tr></thead>
-      <tbody id="blotterRows"><tr><td colspan="5" class="dim">no positions yet</td></tr></tbody>
-    </table>
-  </section>
-
-  <section class="card">
-    <h2>Edge Audit <span class="dim" id="auditWhen"></span></h2>
-    <div class="kv">
-      <label>Backtest trade signals</label><b id="btSignals">—</b>
-      <label>Trade accuracy</label><b id="btAccuracy">—</b>
-      <label>Avg move captured</label><b id="btAvgBps">—</b>
-      <label>15m model accuracy</label><b id="btModel15">—</b>
-      <label>Neutral (condor) signals</label><b id="btNeutral">—</b>
-      <label>Top gate rejections</label><b id="btGates">—</b>
-    </div>
-    <pre id="cpcv">CPCV overfitting audit: runs after tonight's backtest</pre>
-  </section>
-
-  <section class="card">
-    <h2>Operations <span class="badge" id="opsBadge2">…</span></h2>
-    <div class="services" id="services"></div>
-    <div class="kv" style="margin-top:10px">
-      <label>Next backtest / backups</label><b id="nextTimers">—</b>
-      <label>Tape freshness</label><b id="tapeFresh">—</b>
-      <label>Disk free / memory</label><b id="sysRes">—</b>
-    </div>
-    <pre id="watchdog">watchdog: —</pre>
-  </section>
-</div>
-
-<footer>Live data refreshes every 15 s, ops and history every minute. Full dashboards are linked in the header.</footer>
-
+<section id="system" class="view"><div class="page-head"><div><h1>System</h1><p>Service health, endpoint latency, source freshness, disk and host posture.</p></div></div><div class="section"><b>Services</b><span>systemd + APIs</span></div><article class="panel"><div class="pb"><div id="services" class="servicegrid"></div></div></article><div class="section"><b>Data Sources</b><span>overview inputs</span></div><div class="grid g2"><article class="panel"><div class="ph"><div><div class="kicker">Engine API</div><h3>Alpha Endpoint</h3></div></div><div id="alphaEndpoint" class="pb"></div></article><article class="panel"><div class="ph"><div><div class="kicker">Engine API</div><h3>Beta Endpoint</h3></div></div><div id="betaEndpoint" class="pb"></div></article></div><div class="section"><b>Host</b><span>resource posture</span></div><article class="panel"><div id="host" class="metrics"></div></article></section>
+</div></main></div>
+<aside id="drawer" class="drawer" aria-hidden="true"><div class="drawhead"><div><div class="kicker">Beta constituent sensor</div><h2 id="drawTitle" style="margin:5px 0 0;font-size:16px">—</h2></div><button id="close" class="close">×</button></div><div id="drawBody" class="drawbody"></div></aside>
 <script>
-const $=id=>document.getElementById(id);
-$('alphaLink').href=location.protocol+'//'+location.hostname+':8081/';
-$('betaLink').href=location.protocol+'//'+location.hostname+':8082/';
-const money=v=>(v==null||isNaN(v))?'—':(v<0?'-$':'$')+Math.abs(v).toFixed(2);
-const pct=v=>(v==null||isNaN(v))?'—':(v*100).toFixed(1)+'%';
-const tone=(el,v)=>{el.classList.remove('pos','neg');if(v>0)el.classList.add('pos');if(v<0)el.classList.add('neg')};
-const badge=(el,label,ok)=>{el.textContent=label;el.className='badge '+(ok===true?'ok':ok===false?'bad':'warn')};
-const ago=iso=>{if(!iso)return '—';const s=(Date.now()-new Date(iso))/1000;return s<90?Math.round(s)+'s ago':s<5400?Math.round(s/60)+'m ago':Math.round(s/3600)+'h ago'};
-const when=iso=>{if(!iso||iso==='unknown')return '—';const d=new Date(iso);return isNaN(d)?iso:d.toLocaleString(undefined,{weekday:'short',hour:'2-digit',minute:'2-digit'})};
-async function pull(url){const r=await fetch(url,{cache:'no-store'});if(!r.ok)throw new Error(url+' '+r.status);return r.json()}
-
-const GATE_NAMES={coverage:'coverage',covered_weight:'weight cover',directional_edge:'edge',multi_horizon:'horizons',forecast_magnitude:'magnitude',breadth_confirmation:'breadth',flow_confirmation:'flow',spy_liquidity:'liquidity',session_window:'session'};
-
-function sessionInfo(){
-  const now=new Date();
-  const et=new Date(now.toLocaleString('en-US',{timeZone:'America/New_York'}));
-  const dow=et.getDay(),mins=et.getHours()*60+et.getMinutes();
-  const open=9*60+30,close=16*60;
-  const fmt=m=>{const h=Math.floor(m/60),r=m%60;return (h?h+'h ':'')+r+'m'};
-  if(dow>=1&&dow<=5&&mins>=open&&mins<close)return {open:true,text:'market OPEN · closes in '+fmt(close-mins)};
-  let d=0,target=open;
-  if(dow===0)d=1;else if(dow===6)d=2;else if(mins>=close)d=(dow===5)?3:1;
-  const until=d*1440+(d?target+1440-mins-1440:target-mins);
-  return {open:false,text:'market closed · opens in '+fmt(Math.max(until,0))};
-}
-
-function sparkline(el,values,color){
-  if(!values||values.length<2){el.innerHTML='';return}
-  const lo=Math.min(...values),hi=Math.max(...values),flat=hi-lo===0,span=(hi-lo)||1;
-  const W=300,H=el.viewBox.baseVal.height;
-  // A perfectly flat series (weekend tape) renders centered, not at the edge.
-  const y=v=>flat?H/2:H-4-((v-lo)/span)*(H-8);
-  const pts=values.map((v,i)=>`${(i/(values.length-1))*W},${y(v)}`).join(' ');
-  el.innerHTML=`<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6"/>`;
-  return {lo,hi};
-}
-
-function bars(el,values){
-  if(!values||!values.length){el.innerHTML='';return}
-  const H=el.viewBox.baseVal.height,W=300,mid=H/2;
-  const max=Math.max(...values.map(v=>Math.abs(v)))||1;
-  const bw=Math.min(W/values.length-2,26);
-  el.innerHTML=values.map((v,i)=>{
-    const h=Math.abs(v)/max*(mid-3);
-    const x=i*(W/values.length)+1;
-    const y=v>=0?mid-h:mid;
-    const c=v>=0?'var(--pos)':'var(--neg)';
-    return `<rect x="${x}" y="${y}" width="${bw}" height="${Math.max(h,1)}" fill="${c}" rx="1"/>`;
-  }).join('')+`<line x1="0" y1="${mid}" x2="${W}" y2="${mid}" stroke="var(--line)" stroke-width="1"/>`;
-}
-
-let betaDir=null,alphaDir=null;
-
-async function refreshBeta(){
-  try{
-    const s=await pull('/api/beta/state');
-    badge($('betaBadge'),'BETA '+(s.status||'?'),s.status==='LIVE');
-    const d=(s.snapshot||{}).decision;
-    if(d){
-      $('betaAction').textContent=d.action+(d.direction&&d.direction!=='NONE'?' · '+d.direction:'');
-      $('betaAction').className=d.action.startsWith('TRADE')?'pos':'dim';
-      betaDir=d.direction;
-      $('betaReason').textContent=(d.reasons||[])[0]||'';
-      $('betaGatesGrid').innerHTML=Object.entries(d.gates||{}).map(([k,v])=>
-        `<span class="gate"><span class="dot ${v?'up':''}"></span>${GATE_NAMES[k]||k}</span>`).join('');
-      $('betaRiskMult').textContent=(d.risk_multiplier??1).toFixed(2)+'×';
-    }else{
-      $('betaAction').textContent='no snapshot (tape quiet)';$('betaAction').className='dim';
-      $('betaReason').textContent='';betaDir=null;
-    }
-    const fc=((s.snapshot||{}).forecasts)||[];
-    $('betaForecasts').innerHTML=fc.map(f=>{
-      const p=f.probability_up??0.5;
-      const color=p>=0.5?'var(--pos)':'var(--neg)';
-      const from=p>=0.5?50:(p*100);
-      const width=Math.abs(p-0.5)*100;
-      return `<div class="fc"><div class="lbl"><span>${f.horizon_minutes}m — P(up) ${pct(p)}</span><span>conf ${pct(f.confidence)}${f.model_ready?'':' · warming'}</span></div>
-        <div class="bar"><span class="mid"></span><span class="fill" style="left:${Math.min(from,50)}%;width:${width}%;background:${color}"></span></div></div>`;
-    }).join('');
-    const st=s.stream||{};
-    $('betaStream').textContent=`${st.events??'—'} / ${st.reconnects??'—'}`;
-    $('betaLastTick').textContent=ago(st.last_event_at);
-    const l=s.ledger;
-    if(l){
-      $('ledgerEquityHead').textContent=money(l.equity);
-      const day=$('ledgerPnls');day.textContent=`${money(l.day_realized_pnl_dollars)} / ${money(l.realized_pnl_dollars)}`;tone(day,(l.day_realized_pnl_dollars||0)+(l.realized_pnl_dollars||0));
-      $('ledgerWinRate').textContent=l.closed_count?`${pct(l.win_rate)} of ${l.closed_count}`:'no closed trades yet';
-      $('ledgerBudget').textContent=money(l.risk_budget_dollars);
-      const risk=$('ledgerRisk');
-      risk.textContent=`${l.loss_streak||0} · ${l.breaker_tripped?'TRIPPED':'armed at -'+money(l.daily_loss_limit_dollars)}`;
-      tone(risk,l.breaker_tripped?-1:0);
-      const open=(l.open_positions||[]).map(p=>({s:p.strategy,d:p.direction,x:p.status+'×'+p.contracts,w:p.opened_at,v:p.unrealized_pnl_dollars}));
-      const closed=(l.recent_closed||[]).map(p=>({s:p.strategy,d:p.direction,x:p.exit_reason||'CLOSED',w:p.closed_at,v:p.realized_pnl_dollars,dim:1}));
-      const rows=open.concat(closed);
-      $('blotterCount').textContent=`${l.open_count||0} open · ${l.closed_count||0} closed`;
-      $('blotterRows').innerHTML=rows.length?rows.map(r=>
-        `<tr${r.dim?' class="dim"':''}><td>${r.s}</td><td>${r.d}</td><td>${r.x}</td><td>${(r.w||'').slice(5,16).replace('T',' ')}</td><td class="${(r.v||0)>=0?'pos':'neg'}">${money(r.v)}</td></tr>`).join('')
-        :'<tr><td colspan="5" class="dim">no positions yet</td></tr>';
-    }
-    const a=s.alpha_signal;
-    if(a&&a.horizons&&a.horizons['15m']){
-      alphaDir=a.horizons['15m'].probability_up>0.52?'BULLISH':a.horizons['15m'].probability_up<0.48?'BEARISH':'NEUTRAL';
-    }
-    updateAgreement();
-  }catch(e){badge($('betaBadge'),'BETA UNREACHABLE',false)}
-}
-
-function updateAgreement(){
-  const el=$('agreeBadge');
-  if(!betaDir||betaDir==='NONE'){badge(el,'AGREEMENT — beta flat',null);return}
-  if(!alphaDir){badge(el,'AGREEMENT — no alpha read',null);return}
-  if(betaDir===alphaDir)badge(el,'SYSTEMS AGREE · '+betaDir,true);
-  else badge(el,'SYSTEMS SPLIT · β '+betaDir+' / α '+alphaDir,false);
-}
-
-async function refreshAlpha(){
-  try{
-    const s=await pull('/api/alpha/v1/state');
-    const health=((s.health||{}).state||'?');
-    badge($('alphaBadge'),'ALPHA '+health,health==='GREEN'?true:health==='RED'?false:null);
-    badge($('alphaHealth'),health,health==='GREEN'?true:health==='RED'?false:null);
-    const m=s.market||{};
-    if(m.bid&&m.ask){
-      $('spyPx').textContent='$'+((m.bid+m.ask)/2).toFixed(2);
-      const chg=$('spyChg');chg.textContent=(m.change_pct>0?'+':'')+((m.change_pct??0)).toFixed(2)+'%';tone(chg,m.change_pct);
-    }
-    const series=(s.price_series||[]).map(p=>p.price);
-    const range=sparkline($('alphaSpark'),series,'var(--blue)');
-    if(range){$('sparkLow').textContent='$'+range.lo.toFixed(2);$('sparkHigh').textContent='$'+range.hi.toFixed(2)}
-    $('alphaAction').textContent=((s.decision||{}).action)||'—';
-    $('alphaTrust').textContent=((s.health||{}).trust_score??'—');
-    const fh=s.forecast_horizons||{};
-    $('alphaProbs').textContent=['5m','15m','30m'].map(h=>fh[h]?(fh[h].probability_up*100).toFixed(0)+'%':'—').join(' / ');
-    const a=s.account||{};
-    $('alphaEquity').textContent=money(a.equity);
-    const adp=$('alphaDayPnl');adp.textContent=money(a.daily_pnl);tone(adp,a.daily_pnl);
-    $('alphaPosition').textContent=((s.position||{}).open)?'YES':'no';
-  }catch(e){badge($('alphaBadge'),'ALPHA UNREACHABLE',false)}
-}
-
-async function refreshOps(){
-  try{
-    const s=await pull('/status.json');
-    badge($('opsBadge'),s.all_services_active?'OPS ALL GO':'OPS ATTENTION',s.all_services_active);
-    badge($('opsBadge2'),s.all_services_active?'ALL GO':'ATTENTION',s.all_services_active);
-    $('services').innerHTML=Object.entries(s.services||{}).map(([unit,state])=>
-      `<span class="svc"><span class="dot ${state==='active'?'up':''}"></span>${unit.replace('alpha-spy-','α-').replace('beta-spy','β-spy')}</span>`).join('');
-    const t=s.timers_next||{};
-    $('nextTimers').textContent=`${when(t['beta-spy-backtest.timer'])} · ${when(t['beta-spy-backup.timer'])}`;
-    const age=s.tape_age_seconds;
-    $('tapeFresh').textContent=age==null?'—':age<120?age+'s':Math.round(age/60)+'m old';
-    const sess=sessionInfo();
-    if(age!=null){
-      const stale=sess.open&&age>300;
-      badge($('tapeBadge'),stale?'TAPE STALE':'TAPE '+(sess.open?'FLOWING':'IDLE (closed)'),stale?false:true);
-    }
-    $('sysRes').textContent=`${s.disk_free_gb??'—'} GB · ${s.memory_available_mb??'—'}/${s.memory_total_mb??'—'} MB`;
-    $('watchdog').textContent=(s.watchdog_tail||[]).join('\n')||'watchdog: no log yet';
-    const curve=(s.equity_curve||[]).map(p=>p.equity);
-    const r=sparkline($('equityCurve'),curve.length>1?curve:[curve[0]||0,curve[0]||0],'var(--pos)');
-    if(r)$('curveRange').textContent=money(r.lo)+' – '+money(r.hi);
-    const daily=(s.daily_pnl||[]);
-    bars($('dailyBars'),daily.map(d=>d.pnl));
-    if(daily.length)$('dailyRange').textContent=daily[0].date.slice(5)+' → '+daily[daily.length-1].date.slice(5);
-    const b=s.backtest;
-    if(b){
-      $('auditWhen').textContent=(b.report||'')+' · '+(b.created_at||'').slice(0,10);
-      $('btSignals').textContent=b.trade_signals??'—';
-      $('btAccuracy').textContent=pct(b.trade_accuracy);
-      $('btAvgBps').textContent=b.avg_return_bps!=null?b.avg_return_bps.toFixed(2)+' bps':'—';
-      $('btModel15').textContent=pct(b.model_accuracy_15m);
-      $('btNeutral').textContent=b.neutral_signals??'—';
-      const g=b.gate_failures||{};
-      $('btGates').textContent=Object.entries(g).sort((x,y)=>y[1]-x[1]).slice(0,2).map(([k,v])=>`${GATE_NAMES[k]||k} ${v}`).join(' · ')||'—';
-    }
-    if((s.cpcv_verdict||[]).length)$('cpcv').textContent=s.cpcv_verdict.join('\n');
-    const sb=s.scoreboard||{};
-    for(const [sys,prefix] of [['beta_gated','sbGated'],['beta','sbBeta'],['alpha','sbAlpha']]){
-      const g=sb[sys];
-      const days=$(prefix+'Days');
-      if(!g||!g.graded){
-        $(prefix+'N').textContent='0';
-        $(prefix+'Acc').textContent=sys==='alpha'?'collecting…':'—';
-        $(prefix+'Dec').textContent='—';$(prefix+'Bps').textContent='—';
-        if(days)days.textContent=sys==='alpha'?'first graded session starts at the next open':'—';
-        continue;
-      }
-      $(prefix+'N').textContent=g.graded;
-      const acc=$(prefix+'Acc');acc.textContent=pct(g.accuracy);tone(acc,(g.accuracy??0.5)-0.5);
-      $(prefix+'Dec').textContent=g.decisive?`${pct(g.decisive_accuracy)} of ${g.decisive}`:'all decisive';
-      const bps=$(prefix+'Bps');bps.textContent=g.avg_captured_bps!=null?g.avg_captured_bps.toFixed(2):'—';tone(bps,g.avg_captured_bps);
-      if(days)days.textContent=(g.daily||[]).map(d=>`${d.date.slice(5)} ${Math.round(d.accuracy*100)}% (${d.n})`).join(' · ')||'—';
-    }
-  }catch(e){badge($('opsBadge'),'OPS STATUS UNAVAILABLE',false)}
-}
-
-function tickSession(){$('sessInfo').textContent=sessionInfo().text}
-async function tick(){
-  await Promise.allSettled([refreshBeta(),refreshAlpha()]);
-  $('updated').textContent='updated '+new Date().toLocaleTimeString();
-}
-tickSession();tick();refreshOps();
-setInterval(tick,15000);
-setInterval(refreshOps,60000);
-setInterval(tickSession,30000);
+const $=id=>document.getElementById(id),N=v=>Number.isFinite(Number(v)),num=(v,d=2)=>N(v)?Number(v).toFixed(d):'—',pct=(v,d=1)=>N(v)?`${(Number(v)*100).toFixed(d)}%`:'—',spct=(v,d=2)=>N(v)?`${Number(v)>=0?'+':''}${(Number(v)*100).toFixed(d)}%`:'—',signed=(v,d=2,s='')=>N(v)?`${Number(v)>=0?'+':''}${Number(v).toFixed(d)}${s}`:'—',money=(v,d=0)=>N(v)?Number(v).toLocaleString(undefined,{style:'currency',currency:'USD',minimumFractionDigits:d,maximumFractionDigits:d}):'—',esc=s=>String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c])),tone=v=>!N(v)?'':Number(v)>0?'pos':Number(v)<0?'neg':'',dtone=v=>/BULL|LONG/.test(String(v||'').toUpperCase())?'pos':/BEAR|SHORT/.test(String(v||'').toUpperCase())?'neg':'muted';let S=null,last=0;
+function metric(l,v,h='',c=''){return `<div class="metric"><div class="label">${esc(l)}</div><div class="value ${c}">${v}</div><div class="hint">${esc(h)}</div></div>`}function age(ts){if(!ts)return'—';let m=Date.now()-new Date(ts).getTime();if(!N(m))return'—';if(m<60000)return`${Math.max(0,Math.round(m/1000))}s ago`;if(m<3600000)return`${Math.round(m/60000)}m ago`;return`${Math.round(m/3600000)}h ago`}function dot(el,state){el.className=`dot ${state}`}
+function nav(id){document.querySelectorAll('.view').forEach(x=>x.classList.toggle('active',x.id===id));document.querySelectorAll('.nav button').forEach(x=>x.classList.toggle('active',x.dataset.view===id));location.hash=id==='command'?'':id;if(id==='command')requestAnimationFrame(drawChart)}document.querySelectorAll('.nav button').forEach(b=>b.onclick=()=>nav(b.dataset.view));let hash=location.hash.slice(1);if(['alpha','beta','performance','system'].includes(hash))nav(hash);
+function link(kind){return S?.links?.[kind]||`${location.protocol}//${location.hostname}:${kind==='alpha'?'8081':'8082'}/`}function horizon(m){return m===390?'EOD':m>=1440?`${Math.round(m/1440)}D`:`${m}m`}
+function gates(id,g){let rows=[];if(Array.isArray(g))rows=g.map(x=>({name:x.label||x.name||'gate',ok:!!x.passed,detail:x.reason||x.detail||x.kind||''}));else if(g&&typeof g==='object')rows=Object.entries(g).map(([name,ok])=>({name,ok:!!ok,detail:''}));$(id).innerHTML=rows.length?rows.map(x=>`<div class="gate ${x.ok?'pass':'fail'}"><b><i></i>${esc(String(x.name).replaceAll('_',' '))}</b><small>${esc(x.detail|| (x.ok?'qualified':'blocked'))}</small></div>`).join(''):'<div class="empty" style="grid-column:1/-1">No gate state published.</div>'}
+function forecasts(id,rows,kind){$(id).innerHTML=rows?.length?rows.map(r=>{let p=r.probability_up,ret=kind==='alpha'?r.expected_return:(N(r.expected_return_bps)?Number(r.expected_return_bps)/10000:null),up=!N(p)||Number(p)>=.5;return `<div class="fc"><div class="fctop"><b>${horizon(r.horizon_minutes)}</b><span>${kind==='beta'?(r.model_ready?'MODEL LIVE':'WARMING'):(r.integrity||r.role||'')}</span></div><div class="fcdir ${up?'pos':'neg'}">${pct(p,1)} UP</div><div class="meter ${kind==='beta'?'beta':''}"><i style="width:${N(p)?Math.max(0,Math.min(100,Number(p)*100)):0}%"></i></div><div class="fcfoot"><span>${spct(ret,2)}</span><span>${kind==='beta'?`conf ${pct(r.confidence,0)}`:(N(r.predicted_price)?'$'+num(r.predicted_price,2):'')}</span></div></div>`}).join(''):'<div class="empty" style="grid-column:1/-1">No forecast stack available.</div>'}
+function renderTop(){let m=S.market||{},a=S.alpha||{},b=S.beta||{};$('topPrice').textContent=N(m.price)?`$${num(m.price,2)}`:'—';$('topMove').textContent=spct(m.change_pct);$('topMove').className=`move ${tone(m.change_pct)}`;$('topBid').textContent=num(m.bid,2);$('topAsk').textContent=num(m.ask,2);$('topSession').textContent=m.exchange_time||'—';$('marketPill').textContent=m.market_open===true?'MARKET OPEN':m.market_open===false?'MARKET CLOSED':'MARKET —';dot($('alphaDot'),a.available?'ok':'bad');dot($('betaDot'),b.available?(b.status==='DEGRADED'?'warn':'ok'):'bad');let ok=a.available&&b.available;$('sideStatus').textContent=ok?'SYSTEM ONLINE':a.available||b.available?'DEGRADED':'ENGINES OFFLINE';dot($('sideDot'),ok?'ok':a.available||b.available?'warn':'bad')}
+function consensus(){let c=S.consensus||{},a=S.alpha||{},b=S.beta||{},score=Number(c.score);$('score').textContent=N(score)?Math.round(score):'—';$('cstate').textContent=c.state||'—';$('cstate').className=`state ${c.direction==='BULLISH'?'pos':c.direction==='BEARISH'?'neg':c.direction==='DIVERGENT'?'watch':''}`;$('cmethod').textContent=N(c.horizon_match_rate)?`${pct(c.horizon_match_rate,0)} shared-horizon direction match`:'Live agreement index';let deg=N(score)?Math.max(0,Math.min(360,score*3.6)):0,col=score>=65?'var(--pass)':score<=35?'var(--fail)':'var(--watch)';$('ring').style.background=`conic-gradient(${col} 0deg,${col} ${deg}deg,#202a39 ${deg}deg)`;$('adir').textContent=a.direction||'—';$('adir').className=`edir ${dtone(a.direction)}`;$('ameta').textContent=`${pct(a.directional_confidence,0)} directional · trust ${pct(a.trust_score,0)}`;$('bdir').textContent=b.direction||'—';$('bdir').className=`edir ${dtone(b.direction)}`;$('bmeta').textContent=`${pct(b.confidence,0)} confidence · score ${num(b.score,2)}`;let rows=(c.forecasts||[]).filter(x=>[5,15,30].includes(x.horizon_minutes));$('comparison').innerHTML=rows.length?rows.map(r=>`<div class="crow"><b>${horizon(r.horizon_minutes)}</b><span class="ac">α ${pct(r.alpha_probability_up,0)} · ${spct(r.alpha_expected_return,2)}</span><span class="bc">β ${pct(r.beta_probability_up,0)} · ${spct(r.beta_expected_return,2)}</span><span class="match ${r.direction_agreement?'y':'n'}">${r.direction_agreement?'MATCH':'SPLIT'}</span></div>`).join(''):'<div class="empty">No shared horizons.</div>'}
+function command(){let a=S.alpha||{},b=S.beta||{},d=a.decision||{};$('daction').textContent=d.action||'NO STATE';$('daction').className=`daction ${String(d.action||'').includes('TRADE')&&!String(d.action||'').includes('NO_')?'pos':'muted'}`;$('dreason').textContent=d.reason||'Alpha has not published a decision reason.';gates('commandGates',a.gates);$('alphaQuick').innerHTML=[metric('Regime',a.regime||'—',a.gamma_state||''),metric('Trust',pct(a.trust_score,0),a.health_state||'',a.health_state==='GREEN'?'pos':a.health_state==='RED'?'neg':'watch'),metric('Breadth',pct(a.breadth,0),`pressure ${num(a.pressure,2)}`,tone(a.breadth)),metric('Correlation',num(a.correlation,2),`SPY IV ${pct(a.spy_iv,1)}`)].join('');$('betaQuick').innerHTML=[metric('Coverage',pct(b.coverage_ratio,0),`${b.symbol_count||0}/${b.expected_symbol_count||0}`),metric('Above VWAP',pct(b.pct_above_vwap,0),`EMA bull ${pct(b.pct_ema_bullish,0)}`,tone((b.pct_above_vwap??.5)-.5)),metric('Flow',num(b.flow_weighted,3),`buy ${pct(b.pct_buy_flow,0)}`,tone(b.flow_weighted)),metric('Participation',pct(b.participation,0),`concentration ${pct(b.concentration,0)}`)].join('');let alerts=S.alerts||[];$('alertCount').textContent=alerts.length;$('alerts').innerHTML=alerts.length?alerts.slice(0,12).map(x=>`<div class="alert ${esc(x.severity||'info')}"><i></i><div><b>${esc(x.title||x.source||'Alert')}</b><p>${esc(x.message||'')}</p></div><time>${esc(age(x.timestamp))}</time></div>`).join(''):'<div class="empty">No active alerts.</div>';let p=a.position||{},acct=a.account||{};if(!p.open){$('position').innerHTML=`<div class="empty">NO ACTIVE POSITION · Buying power ${money(acct.buying_power,0)} · Allowed risk ${money(acct.allowed_risk,0)}</div>`}else{$('position').innerHTML=`<div class="metrics">${metric('Strategy',esc(p.strategy||p.description||'SPY'),'active')}${metric('P&L',money(p.pnl,0),pct(p.pnl_pct,1),tone(p.pnl))}${metric('Current Value',money(p.current_value,0),`entry ${money(p.entry_debit,0)}`)}${metric('Thesis',esc(p.thesis_status||'—'),p.exit_recommendation||'')}</div>`}}
+function alpha(){let a=S.alpha||{},m=a.market||{},acct=a.account||{},aud=a.audit||{};$('openAlpha').href=link('alpha');$('alphaHero').innerHTML=[metric('Direction',a.direction||'—',`${pct(a.probability_up,0)} probability up`,dtone(a.direction)),metric('15m Move',spct(a.expected_return_15m,2),N(m.predicted_price_15m)?`P50 $${num(m.predicted_price_15m,2)}`:'',tone(a.expected_return_15m)),metric('Trust',pct(a.trust_score,0),a.health_state||'',a.health_state==='GREEN'?'pos':a.health_state==='RED'?'neg':'watch'),metric('Allowed Risk',money(acct.allowed_risk,0),`${money(acct.equity,0)} equity`)].join('');forecasts('alphaForecasts',a.horizons||[],'alpha');let h=a.regime_hierarchy||{};$('regimes').innerHTML=['micro','intraday','swing','structural'].map(k=>{let r=h[k]||{};return `<div class="regime"><small>${k}</small><b>${esc(r.label||r.key||'—')}</b><p>${esc(r.evidence||'')} ${N(r.history_samples)?`· n=${r.history_samples}`:''}</p></div>`}).join('');gates('alphaGates',a.gates);let rows=a.candidates||[];$('candidates').innerHTML=rows.length?rows.map(c=>`<tr><td class="strategy">${esc(c.strategy||'—')}</td><td><span class="chip">${esc(c.status||'—')}</span></td><td>${num(c.score,2)}</td><td class="${tone(c.expected_value)}">${money(c.expected_value,0)}</td><td>${pct(c.probability_profit,0)}</td><td>${money(c.max_loss,0)}</td><td>${money(c.q_executable_edge,0)}</td><td class="${tone(c.stress_expected_value)}">${money(c.stress_expected_value,0)}</td></tr>`).join(''):'<tr><td colspan="8" class="empty">No candidates published.</td></tr>';$('alphaAudit').innerHTML=[metric('Direction Hit',pct(aud.direction_accuracy,1),`${aud.sample_size??0} anchors`),metric('Brier',num(aud.brier,3),'lower is better'),metric('Range Coverage',pct(aud.range_coverage,1),'interval capture'),metric('Price MAE',num(aud.price_mae,3),'forecast error')].join('');$('alphaServices').innerHTML=(a.services||[]).length?a.services.map(s=>service(s.name,['ok','active','LIVE','GREEN'].includes(s.status),`${N(s.latency_ms)?num(s.latency_ms,0)+' ms':'—'} latency · ${N(s.last_event_age_ms)?num(s.last_event_age_ms/1000,0)+'s':'—'} event age`)).join(''):'<div class="empty">No Alpha service rows.</div>'}
+function beta(){let b=S.beta||{};$('openBeta').href=link('beta');$('betaHero').innerHTML=[metric('Direction',b.direction||'—',`${pct(b.confidence,0)} confidence`,dtone(b.direction)),metric('Decision',b.decision_action||'—',`score ${num(b.score,3)}`),metric('Coverage',pct(b.coverage_ratio,1),`${b.symbol_count||0}/${b.expected_symbol_count||0} sensors`),metric('Tape Flow',num(b.flow_weighted,3),`participation ${pct(b.participation,0)}`,tone(b.flow_weighted))].join('');forecasts('betaForecasts',b.forecasts||[],'beta');heat();sector();gates('betaGates',b.gates)}
+function sensor(s){let vals=[s.return_5m,N(s.vwap_distance_bps)?Number(s.vwap_distance_bps)/100:0,s.flow?.order_flow_imbalance].filter(N).map(Number);return vals.length?Math.max(-1,Math.min(1,vals.reduce((a,b)=>a+b,0)/vals.length*5)):0}function heat(){let b=S.beta||{},rows=(b.symbols||[]).filter(x=>x?.symbol&&x.symbol!=='SPY');$('heatInfo').textContent=`${rows.length} constituent states · ${pct(b.coverage_ratio,1)} coverage`;$('heat').innerHTML=rows.length?rows.map((s,i)=>{let v=sensor(s),alpha=.18+Math.abs(v)*.58,bg=v>.04?`rgba(45,224,165,${alpha})`:v<-.04?`rgba(255,95,120,${alpha})`:'#1b2431';return `<button class="cell" data-i="${i}" title="${esc(s.symbol)}" style="background:${bg}"></button>`}).join(''):'<div class="empty" style="grid-column:1/-1">No constituent matrix yet.</div>';document.querySelectorAll('[data-i]').forEach(x=>x.onclick=()=>openSymbol(rows[Number(x.dataset.i)]))}function openSymbol(s){let f=s.flow||{};$('drawTitle').textContent=`${s.symbol} · ${s.sector||'Unknown sector'}`;$('drawBody').innerHTML=[['Price',N(s.close)?'$'+num(s.close,2):'—'],['1m return',spct(s.return_1m,2)],['5m return',spct(s.return_5m,2)],['15m return',spct(s.return_15m,2)],['VWAP distance',N(s.vwap_distance_bps)?signed(s.vwap_distance_bps,1,' bp'):'—'],['EMA 8 / 21',`${num(s.ema8,2)} / ${num(s.ema21,2)}`],['RSI 14',num(s.rsi14,1)],['Relative volume',num(s.relative_volume20,2)],['Order-flow imbalance',num(f.order_flow_imbalance,3)],['Quote imbalance',num(f.quote_imbalance,3)],['Average spread',N(f.average_spread_bps)?num(f.average_spread_bps,1)+' bp':'—'],['Trades',f.trades??'—'],['SPY weight',pct(s.weight,2)]].map(([k,v])=>`<div class="kv"><span>${esc(k)}</span><b>${v}</b></div>`).join('');$('drawer').classList.add('open');$('drawer').setAttribute('aria-hidden','false')}function sector(){let rows=(S.beta?.sectors||[]).slice().sort((a,b)=>(b.covered_weight||0)-(a.covered_weight||0));$('sectors').innerHTML=rows.length?rows.map(s=>`<tr><td class="strategy">${esc(s.sector)}</td><td>${s.count??'—'}</td><td>${pct(s.covered_weight,1)}</td><td class="${tone(s.trend)}">${num(s.trend,3)}</td><td class="${tone(s.momentum)}">${num(s.momentum,3)}</td><td class="${tone(s.flow)}">${num(s.flow,3)}</td><td>${pct(s.participation,0)}</td></tr>`).join(''):'<tr><td colspan="7" class="empty">No sector factors.</td></tr>';$('sectorBars').innerHTML=rows.length?rows.map(s=>{let v=Number(s.flow??s.momentum??0),w=Math.min(100,Math.max(2,Math.abs(v)*100));return `<div class="barrow"><label>${esc(s.sector)}</label><div class="meter"><i style="width:${w}%;background:${v>=0?'var(--pass)':'var(--fail)'}"></i></div><b class="${tone(v)}">${signed(v,3)}</b></div>`}).join(''):'<div class="empty">No sector tape.</div>'}
+function renderPerformance(){let a=S.performance?.alpha||{},b=S.performance?.beta||{},c=S.consensus||{};$('perfAlpha').innerHTML=[metric('Direction Accuracy',pct(a.direction_accuracy,1),`${a.sample_size??0} samples`),metric('Brier',num(a.brier,3),'calibration'),metric('Range Coverage',pct(a.range_coverage,1),'interval capture'),metric('Price MAE',num(a.price_mae,3),'absolute error')].join('');$('reportPath').textContent=S.performance?.beta_backtest_path||'No report located';let h=b.horizons||[];$('perfBeta').innerHTML=h.length?h.map(r=>`<tr><td class="strategy">${horizon(r.horizon_minutes)}</td><td>${r.observations??'—'}</td><td>${r.model_ready_observations??'—'}</td><td>${pct(r.direction_accuracy,1)}</td><td>${pct(r.model_ready_direction_accuracy,1)}</td><td>${num(r.brier,3)}</td><td>${num(r.model_ready_brier,3)}</td><td>${N(r.model_ready_return_mae_bps)?num(r.model_ready_return_mae_bps,2)+' bp':'—'}</td></tr>`).join(''):'<tr><td colspan="8" class="empty">No Beta backtest JSON found.</td></tr>';let d=b.decisions||{};$('decisionPerf').innerHTML=[metric('Trade Signals',d.trade_signals??'—',`${d.matured_trade_signals??'—'} matured`),metric('Direction Accuracy',pct(d.direction_accuracy,1),'qualified decisions'),metric('Mean Adj Return',N(d.avg_underlying_return_bps)?signed(d.avg_underlying_return_bps,2,' bp'):'—','15m direction-adjusted',tone(d.avg_underlying_return_bps)),metric('NO_TRADE',d.no_trade_signals??'—','valid blocked snapshots')].join('');$('consensusPerf').innerHTML=[metric('Agreement Index',N(c.score)?num(c.score,0):'—',c.state||''),metric('Horizon Match',pct(c.horizon_match_rate,0),'current shared horizons'),metric('Alpha Direction',c.alpha_direction||'—',pct(c.alpha_confidence,0),dtone(c.alpha_direction)),metric('Beta Direction',c.beta_direction||'—',pct(c.beta_confidence,0),dtone(c.beta_direction))].join('')}
+function service(name,ok,detail){return `<div class="service"><div class="servtop"><b>${esc(name||'service')}</b><i class="dot ${ok?'ok':'bad'}"></i></div><small>${esc(detail||'')}</small></div>`}function endpoint(id,e){$(id).innerHTML=`<div class="kv"><span>URL</span><b>${esc(e.url||'—')}</b></div><div class="kv"><span>Status</span><b class="${e.ok?'pos':'neg'}">${e.ok?'REACHABLE':'FAILED'}</b></div><div class="kv"><span>Latency</span><b>${num(e.latency_ms,1)} ms</b></div><div class="kv"><span>Error</span><b>${esc(e.error||'—')}</b></div>`}function system(){let s=S.system||{},a=s.alpha_endpoint||{},b=s.beta_endpoint||{},units=s.units||[];$('services').innerHTML=[service('Alpha API',a.ok,`${num(a.latency_ms,0)} ms · ${a.error||'reachable'}`),service('Beta API',b.ok,`${num(b.latency_ms,0)} ms · ${b.error||'reachable'}`),...units.map(u=>service(u.name,u.ok,u.state))].join('');endpoint('alphaEndpoint',a);endpoint('betaEndpoint',b);let d=s.disk||{},l=s.loadavg||[];$('host').innerHTML=[metric('Host',s.hostname||'—','overview node'),metric('Disk Used',pct(d.used_ratio,1),N(d.free)?`${num(d.free/1073741824,1)} GB free`:''),metric('Load 1m',num(l[0],2),`5m ${num(l[1],2)} · 15m ${num(l[2],2)}`),metric('Status Age',age(S.generated_at),S.generated_at||'')].join('')}
+function drawChart(){if(!S)return;let c=$('chart'),r=c.getBoundingClientRect(),dpr=Math.max(1,Math.min(2,devicePixelRatio||1));c.width=Math.max(1,Math.floor(r.width*dpr));c.height=Math.max(1,Math.floor(r.height*dpr));let x=c.getContext('2d');x.scale(dpr,dpr);let w=r.width,h=r.height,p={l:52,r:18,t:28,b:26},hist=(S.market?.history||[]).filter(z=>N(z.price));x.clearRect(0,0,w,h);if(!hist.length){x.fillStyle='#68768a';x.font='10px monospace';x.fillText('No SPY minute history located. Set BETA_DB if needed.',18,36);$('chartInfo').textContent='NO HISTORY';return}let a=(S.alpha?.horizons||[]).find(z=>z.horizon_minutes===15),b=(S.beta?.forecasts||[]).find(z=>z.horizon_minutes===15),last=Number(hist.at(-1).price),extra=[];if(N(a?.predicted_price))extra.push(Number(a.predicted_price));if(N(b?.expected_return_bps))extra.push(last*(1+Number(b.expected_return_bps)/10000));let vals=[...hist.map(z=>Number(z.price)),...extra],lo=Math.min(...vals),hi=Math.max(...vals),span=hi-lo||1,Y=v=>p.t+(hi-v)/(span*1.25)*(h-p.t-p.b)+.1*(h-p.t-p.b),X=i=>p.l+i/Math.max(1,hist.length-1)*(w-p.l-p.r);x.strokeStyle='rgba(108,125,149,.16)';x.fillStyle='#617086';x.font='8px monospace';for(let i=0;i<5;i++){let y=p.t+i*(h-p.t-p.b)/4;x.beginPath();x.moveTo(p.l,y);x.lineTo(w-p.r,y);x.stroke();x.fillText((hi-i/4*(hi-lo)).toFixed(2),7,y+3)}x.strokeStyle='#edf3fb';x.lineWidth=1.5;x.beginPath();hist.forEach((z,i)=>{let xx=X(i),yy=Y(Number(z.price));i?x.lineTo(xx,yy):x.moveTo(xx,yy)});x.stroke();let lx=X(hist.length-1),ly=Y(last);function fl(price,color,label){if(!N(price))return;let y=Y(Number(price));x.strokeStyle=color;x.setLineDash([5,4]);x.beginPath();x.moveTo(lx,ly);x.lineTo(w-p.r,y);x.stroke();x.setLineDash([]);x.fillStyle=color;x.fillText(`${label} ${Number(price).toFixed(2)}`,w-p.r-78,y-5)}fl(a?.predicted_price,'#35d9ff','α15');if(N(b?.expected_return_bps))fl(last*(1+Number(b.expected_return_bps)/10000),'#9c7cff','β15');$('chartInfo').textContent=`${hist.length} MIN · ${lo.toFixed(2)}–${hi.toFixed(2)}`}
+function render(){renderTop();consensus();command();alpha();beta();renderPerformance();system();drawChart()}async function load(){try{let r=await fetch(`status.json?t=${Date.now()}`,{cache:'no-store'});if(!r.ok)throw Error(`HTTP ${r.status}`);S=await r.json();last=Date.now();render()}catch(e){console.error(e);$('sideStatus').textContent='STATUS UNAVAILABLE';dot($('sideDot'),'bad')}}$('refresh').onclick=load;$('close').onclick=()=>{$('drawer').classList.remove('open');$('drawer').setAttribute('aria-hidden','true')};addEventListener('resize',()=>requestAnimationFrame(drawChart));addEventListener('keydown',e=>{if(e.key==='Escape')$('close').click()});setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit',second:'2-digit'});if(last&&Date.now()-last>130000){$('sideStatus').textContent='STATUS STALE';dot($('sideDot'),'warn')}},1000);setInterval(load,30000);load();
 </script>
 </body>
 </html>

@@ -1,8 +1,17 @@
 [Unit]
-Description=Write ops status.json for the SPY trading overview page
+Description=Generate SPY Command overview status
+After=network-online.target beta-spy.service
+Wants=network-online.target
 
 [Service]
 Type=oneshot
-User=root
-ExecStart=/usr/bin/python3 /usr/local/sbin/spy-overview-status
-TimeoutStartSec=1m
+EnvironmentFile=-/etc/spy-overview.env
+ExecStart=/usr/local/sbin/spy-overview-status --output /var/www/spy-overview/status.json
+
+# The generator is read-only except for its status.json output. It may need to
+# read Beta-spy SQLite/report files and query systemd, so keep hardening modest.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/www/spy-overview
