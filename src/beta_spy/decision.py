@@ -81,6 +81,15 @@ class DecisionEngine:
         self._last_session: object = None
         self._session_open_price: float | None = None
 
+    @property
+    def session_open_price(self) -> float | None:
+        return self._session_open_price
+
+    def recover_session_open(self, price: float | None) -> None:
+        """Restore the 9:30 print after a mid-session restart."""
+        if self._session_open_price is None and price is not None and price > 0:
+            self._session_open_price = float(price)
+
     def _minutes_from_open(self, timestamp: datetime) -> int:
         eastern = timestamp.astimezone(_EASTERN)
         return (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
@@ -104,10 +113,11 @@ class DecisionEngine:
         forecasts: tuple[HorizonForecast, ...],
         spy_price: float | None = None,
     ) -> Decision:
-        if timestamp.date() != self._last_session:
+        session_day = timestamp.date()
+        if self._last_session is not None and session_day != self._last_session:
             self._recent_returns.clear()
             self._session_open_price = None
-            self._last_session = timestamp.date()
+        self._last_session = session_day
         if (
             spy_price is not None
             and spy_price > 0

@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Iterable, Iterator
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Iterable, Iterator
+from zoneinfo import ZoneInfo
 
-from .models import Decision, FlowFeatures, HorizonForecast, HoldingMeta, MarketFactors, MinuteBar
-
+from .models import Decision, FlowFeatures, HoldingMeta, HorizonForecast, MarketFactors, MinuteBar
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -240,6 +240,36 @@ class Tape500Store:
                 (_iso(timestamp), json.dumps(payload, default=str, separators=(",", ":"))),
             )
             self.connection.commit()
+
+    def first_rth_spy_price(self, timestamp: datetime) -> float | None:
+        """First SPY print in the opening five minutes, for session-open recovery."""
+        eastern = timestamp.astimezone(ZoneInfo("America/New_York"))
+        start = datetime(eastern.year, eastern.month, eastern.day, 9, 30, tzinfo=ZoneInfo("America/New_York"))
+        end = start + timedelta(minutes=5)
+        start_iso = _iso(start.astimezone(UTC))
+        end_iso = _iso(end.astimezone(UTC))
+        with self.lock:
+            row = self.connection.execute(
+                """
+                SELECT price FROM spy_trades
+                WHERE timestamp >= ? AND timestamp < ? AND price > 0
+                ORDER BY timestamp ASC LIMIT 1
+                """,
+                (start_iso, end_iso),
+            ).fetchone()
+            if row and float(row[0] or 0.0) > 0:
+                return float(row[0])
+            row = self.connection.execute(
+                """
+                SELECT open FROM minute_bars
+                WHERE symbol = 'SPY' AND timestamp >= ? AND timestamp < ? AND open > 0
+                ORDER BY timestamp ASC LIMIT 1
+                """,
+                (start_iso, end_iso),
+            ).fetchone()
+            if row and float(row[0] or 0.0) > 0:
+                return float(row[0])
+        return None
 
     def save_decision(self, decision: Decision) -> None:
         with self.lock:

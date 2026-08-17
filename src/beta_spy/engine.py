@@ -276,6 +276,8 @@ class Tape500Engine:
         spy = next((item for item in symbol_features if item.symbol == "SPY"), None)
         if spy is None or spy.close <= 0:
             return None
+        if self.store is not None and self.decisions.session_open_price is None:
+            self.decisions.recover_session_open(self.store.first_rth_spy_price(timestamp))
         forecasts = self.forecasts.step(timestamp, factors, spy.close)
         decision = self.decisions.decide(timestamp, factors, forecasts, spy_price=spy.close)
         self.meta_gate.mature(timestamp, spy.close)

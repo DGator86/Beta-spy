@@ -4,6 +4,8 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from beta_spy.breadth import BreadthAggregator
 from beta_spy.engine import Tape500Engine
 from beta_spy.flow import FlowAccumulator
@@ -394,6 +396,45 @@ def test_session_bias_blocks_calls_and_extends_put_hold():
     assert held.action == "TRADE"
     assert held.direction == "BEARISH"
     assert held.hold_minutes > 90
+
+
+def test_session_open_recovers_after_mid_session_restart(tmp_path: Path):
+    from beta_spy.decision import DecisionEngine
+    from beta_spy.models import HorizonForecast, MarketFactors
+    from beta_spy.storage import Tape500Store
+
+    later = datetime(2026, 8, 17, 18, 50, tzinfo=UTC)
+    store = Tape500Store(tmp_path / "tape.sqlite")
+    store.connection.execute(
+        "INSERT INTO spy_trades(timestamp,sequence,price,size,bid,ask) VALUES(?,?,?,?,?,?)",
+        ("2026-08-17T13:30:00Z", 1, 776.18, 100, 776.17, 776.19),
+    )
+    store.connection.commit()
+    assert store.first_rth_spy_price(later) == pytest.approx(776.18)
+
+    engine = DecisionEngine()
+    engine.recover_session_open(store.first_rth_spy_price(later))
+    forecasts = tuple(
+        HorizonForecast(horizon_minutes=h, probability_up=0.66, expected_return_bps=8.0,
+                        confidence=0.5, model_ready=True, sample_count=500)
+        for h in (5, 15, 30)
+    )
+    factors = MarketFactors(
+        timestamp=later, symbol_count=500, expected_symbol_count=500,
+        coverage_ratio=0.99, covered_weight=0.99,
+        trend_ew=0.6, trend_weighted=0.6, momentum_ew=0.6,
+        momentum_weighted=0.6, volume_ew=0.0, volume_weighted=0.0,
+        flow_ew=0.6, flow_weighted=0.6, volatility_ew=0.10,
+        volatility_weighted=0.10, pct_above_vwap=0.8, pct_ema_bullish=0.8,
+        pct_positive_5m=0.8, pct_buy_flow=0.8, participation=0.6,
+        concentration=0.1, breadth_acceleration=0.0, spy_return_1m=0.0002,
+        spy_return_5m=0.001, spy_vwap_distance_bps=-8.0, spy_flow=0.6,
+        spy_quote_imbalance=0.2, spy_spread_bps=1.0,
+    )
+    faded = engine.decide(later, factors, forecasts, spy_price=773.78)
+    assert faded.action == "NO_TRADE"
+    assert faded.gates["session_bias"] is False
+    store.close()
 
 
 def test_neutral_premium_blocked_when_far_from_vwap():
