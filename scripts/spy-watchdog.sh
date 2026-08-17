@@ -57,6 +57,43 @@ check_http "alpha-spy decision API" http://127.0.0.1:8787/api/v1/state
 check_http "alpha-spy dashboard" http://127.0.0.1:8788/health
 check_http "beta-spy dashboard" http://127.0.0.1:8790/api/health
 
+# 2b. Alpha forecast freshness during the session. The decision API can
+# answer 200 with days-old state while the engine crash-loops (it did for
+# two days after a pandas upgrade), so liveness must be judged by the
+# forecast timestamp, not the HTTP code.
+dow="$(date -u +%u)"
+hm="$(date -u +%H%M)"
+if (( dow <= 5 )) && [[ "$hm" > "1340" && "$hm" < "2000" ]]; then
+  VIEW_TOKEN="$(grep -s '^ALPHA_SPY_VIEW_TOKEN=' /etc/alpha-spy/secrets.env | cut -d= -f2)"
+  if [[ -n "$VIEW_TOKEN" ]]; then
+    AGE="$(curl -s -m 10 -H "X-Dashboard-Token: $VIEW_TOKEN" \
+        http://127.0.0.1:8788/api/v1/dashboard/state 2>/dev/null \
+      | python3 -c '
+import json, sys
+from datetime import UTC, datetime
+try:
+    d = json.load(sys.stdin)
+    created = d["forecast_horizons"]["15m"]["created_at"]
+    dt = datetime.fromisoformat(created.replace("Z", "+00:00"))
+    print(int((datetime.now(UTC) - dt).total_seconds()))
+except Exception:
+    print(-1)
+')"
+    if [[ "$AGE" == "-1" ]]; then
+      note "alpha-spy forecast freshness unknown (dashboard state unreadable)"
+    elif (( AGE > 600 )); then
+      note "alpha-spy 15m forecast is STALE: ${AGE}s old during market hours (engine likely failing)"
+    fi
+  fi
+fi
+
+# 2c. Disk headroom. Alpha's collector writes ~20 GB/day; a full disk takes
+# down every service on the box at once.
+DISK_PCT="$(df --output=pcent / | tail -1 | tr -dc 0-9)"
+if (( DISK_PCT >= 90 )); then
+  note "disk is ${DISK_PCT}% full: services will fail when it reaches 100%"
+fi
+
 # 3. Code-revert detection for the improved beta-spy build.
 PKG=/opt/beta-spy/venv/lib/python3.12/site-packages/beta_spy
 if [[ -d "$PKG" ]] && ! grep -q plan_best_strategy "$PKG/options.py" 2>/dev/null; then
@@ -64,8 +101,6 @@ if [[ -d "$PKG" ]] && ! grep -q plan_best_strategy "$PKG/options.py" 2>/dev/null
 fi
 
 # 4. Tape freshness during the US session (Mon-Fri 13:35-20:00 UTC).
-dow="$(date -u +%u)"
-hm="$(date -u +%H%M)"
 if (( dow <= 5 )) && [[ "$hm" > "1335" && "$hm" < "2000" ]]; then
   last="$(sqlite3 "file:/var/lib/beta-spy/beta-spy.sqlite?mode=ro" \
     "SELECT CAST(strftime('%s','now') - strftime('%s', MAX(timestamp)) AS INTEGER) FROM minute_bars" \

@@ -22,6 +22,9 @@ SCRIPTS="${BETA_SPY_SCRIPTS:-/opt/beta-spy/src/scripts}"
   --interval "${BETA_SPY_BACKTEST_INTERVAL:-1min}" \
   --output "$REPORTS/backtest-${STAMP}"
 
+# Stable path consumed by the SPY Command overview generator.
+ln -sf "$REPORTS/backtest-${STAMP}.json" "$REPORTS/backtest-latest.json"
+
 # Self-audit: re-run combinatorial purged cross-validation on the freshly
 # extended tape so overfitting of the production gates is re-measured every
 # night as data grows. The report lands in the reports directory, which the
