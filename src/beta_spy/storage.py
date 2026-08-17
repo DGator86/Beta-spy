@@ -9,7 +9,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .models import Decision, FlowFeatures, HoldingMeta, HorizonForecast, MarketFactors, MinuteBar
+from .models import Decision, FlowFeatures, HoldingMeta, HorizonForecast, MarketFactors, MinuteBar, TradePrint
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -50,6 +50,7 @@ CREATE TABLE IF NOT EXISTS minute_flow (
     absorption REAL,
     quote_updates INTEGER NOT NULL,
     trades INTEGER NOT NULL,
+    payload TEXT,
     PRIMARY KEY (timestamp, symbol)
 );
 CREATE INDEX IF NOT EXISTS minute_flow_symbol_time ON minute_flow(symbol, timestamp);
@@ -99,6 +100,59 @@ def _iso(value: datetime) -> str:
     return value.isoformat().replace("+00:00", "Z")
 
 
+_CORE_FLOW_FIELDS = (
+    "buy_volume",
+    "sell_volume",
+    "neutral_volume",
+    "order_flow_imbalance",
+    "quote_imbalance",
+    "average_spread_bps",
+    "trade_intensity",
+    "average_trade_size",
+    "price_impact_bps_per_10k",
+    "absorption",
+    "quote_updates",
+    "trades",
+)
+
+
+def _flow_payload(flow: FlowFeatures) -> str | None:
+    extras = {key: value for key, value in asdict(flow).items() if key not in _CORE_FLOW_FIELDS}
+    if not extras or all(value is None or value == 0 or value == 0.0 for value in extras.values()):
+        return None
+    return json.dumps(extras, separators=(",", ":"))
+
+
+def _flow_from_row(row: tuple) -> FlowFeatures:
+    extras: dict[str, object] = {}
+    if len(row) > 13 and row[13]:
+        try:
+            parsed = json.loads(str(row[13]))
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
+            extras = parsed
+    return FlowFeatures(
+        buy_volume=float(row[1]),
+        sell_volume=float(row[2]),
+        neutral_volume=float(row[3]),
+        order_flow_imbalance=float(row[4]) if row[4] is not None else None,
+        quote_imbalance=float(row[5]) if row[5] is not None else None,
+        average_spread_bps=float(row[6]) if row[6] is not None else None,
+        trade_intensity=float(row[7]),
+        average_trade_size=float(row[8]) if row[8] is not None else None,
+        price_impact_bps_per_10k=float(row[9]) if row[9] is not None else None,
+        absorption=float(row[10]) if row[10] is not None else None,
+        quote_updates=int(row[11]),
+        trades=int(row[12]),
+        **{
+            key: extras[key]
+            for key in extras
+            if key not in _CORE_FLOW_FIELDS and key in FlowFeatures.__dataclass_fields__
+        },
+    )
+
+
 class Tape500Store:
     def __init__(self, path: Path | str):
         self.path = Path(path)
@@ -107,7 +161,16 @@ class Tape500Store:
         self.connection = sqlite3.connect(self.path, check_same_thread=False, timeout=30)
         self.connection.execute("PRAGMA busy_timeout=30000")
         self.connection.executescript(SCHEMA)
+        self._migrate()
         self.connection.commit()
+
+    def _migrate(self) -> None:
+        columns = {
+            str(row[1])
+            for row in self.connection.execute("PRAGMA table_info(minute_flow)").fetchall()
+        }
+        if "payload" not in columns:
+            self.connection.execute("ALTER TABLE minute_flow ADD COLUMN payload TEXT")
 
     def close(self) -> None:
         self.connection.close()
@@ -159,15 +222,15 @@ class Tape500Store:
                 INSERT OR REPLACE INTO minute_flow(
                     timestamp,symbol,buy_volume,sell_volume,neutral_volume,order_flow_imbalance,
                     quote_imbalance,average_spread_bps,trade_intensity,average_trade_size,
-                    price_impact_bps_per_10k,absorption,quote_updates,trades
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    price_impact_bps_per_10k,absorption,quote_updates,trades,payload
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 [
                     (
                         _iso(timestamp), symbol, flow.buy_volume, flow.sell_volume, flow.neutral_volume,
                         flow.order_flow_imbalance, flow.quote_imbalance, flow.average_spread_bps,
                         flow.trade_intensity, flow.average_trade_size, flow.price_impact_bps_per_10k,
-                        flow.absorption, flow.quote_updates, flow.trades,
+                        flow.absorption, flow.quote_updates, flow.trades, _flow_payload(flow),
                     )
                     for timestamp, symbol, flow in rows
                 ],
@@ -180,26 +243,13 @@ class Tape500Store:
                 """
                 SELECT symbol,buy_volume,sell_volume,neutral_volume,order_flow_imbalance,quote_imbalance,
                        average_spread_bps,trade_intensity,average_trade_size,price_impact_bps_per_10k,
-                       absorption,quote_updates,trades
+                       absorption,quote_updates,trades,payload
                 FROM minute_flow WHERE timestamp=?
                 """,
                 (_iso(timestamp),),
             )
             rows = cursor.fetchall()
-        return {
-            str(row[0]): FlowFeatures(
-                buy_volume=float(row[1]), sell_volume=float(row[2]), neutral_volume=float(row[3]),
-                order_flow_imbalance=float(row[4]) if row[4] is not None else None,
-                quote_imbalance=float(row[5]) if row[5] is not None else None,
-                average_spread_bps=float(row[6]) if row[6] is not None else None,
-                trade_intensity=float(row[7]),
-                average_trade_size=float(row[8]) if row[8] is not None else None,
-                price_impact_bps_per_10k=float(row[9]) if row[9] is not None else None,
-                absorption=float(row[10]) if row[10] is not None else None,
-                quote_updates=int(row[11]), trades=int(row[12]),
-            )
-            for row in rows
-        }
+        return {str(row[0]): _flow_from_row(row) for row in rows}
 
     def save_factors(self, factors: MarketFactors) -> None:
         with self.lock:
@@ -270,6 +320,31 @@ class Tape500Store:
             if row and float(row[0] or 0.0) > 0:
                 return float(row[0])
         return None
+
+    def iter_spy_trades(self, day) -> Iterator[TradePrint]:
+        """Session tape for SPY — used to rebuild auction/CVD after a restart."""
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT timestamp,sequence,price,size,bid,ask
+                FROM spy_trades
+                WHERE timestamp >= ? AND timestamp < ?
+                ORDER BY timestamp, sequence
+                """,
+                (_iso(start), _iso(end)),
+            ).fetchall()
+        for row in rows:
+            yield TradePrint(
+                symbol="SPY",
+                timestamp=datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")),
+                sequence=int(row[1]) if row[1] is not None else None,
+                price=float(row[2]),
+                size=float(row[3]),
+                bid=float(row[4]) if row[4] is not None else None,
+                ask=float(row[5]) if row[5] is not None else None,
+            )
 
     def save_decision(self, decision: Decision) -> None:
         with self.lock:

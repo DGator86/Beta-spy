@@ -106,6 +106,7 @@ class TradierMarketStream:
                 self.warmup()
             except Exception as exc:  # noqa: BLE001 - warm-start must never block live start
                 self.hub.patch_stream(last_error=f"warm-start failed: {exc}")
+        self.engine.recover_spy_microstructure(datetime.now(UTC))
         symbols = list(self.engine.holdings)
         if "SPY" not in symbols:
             symbols.append("SPY")

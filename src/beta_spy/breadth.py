@@ -140,6 +140,33 @@ class BreadthAggregator:
                 for item in constituents
             ]
         )
+        structure_values = [
+            item.structure.structure_state
+            for item in constituents
+            if item.structure.structure_state is not None
+        ]
+        structure_pairs = [
+            (item.structure.structure_state, item.weight)
+            for item in constituents
+            if item.structure.structure_state is not None
+        ]
+        structure_ew = _mean(structure_values)
+        structure_weighted = _weighted(structure_pairs)
+        structure_divergence = None
+        if structure_ew is not None and structure_weighted is not None:
+            structure_divergence = structure_ew - structure_weighted
+        pct_struct_bull = _fraction(
+            [None if item.structure.structure_state is None else item.structure.structure_state > 0 for item in constituents]
+        )
+        pct_struct_bear = _fraction(
+            [None if item.structure.structure_state is None else item.structure.structure_state < 0 for item in constituents]
+        )
+        absorption_values = [item.flow.absorption for item in constituents if item.flow.absorption is not None]
+        absorption_pairs = [
+            (item.flow.absorption, item.weight) for item in constituents if item.flow.absorption is not None
+        ]
+        cvd_values = [item.flow.cvd_session for item in constituents if item.flow.cvd_session is not None]
+        cvd_pairs = [(item.flow.cvd_session, item.weight) for item in constituents if item.flow.cvd_session is not None]
         participation_parts = [value for value in (pct_above, pct_ema, pct_pos5, pct_buy) if value is not None]
         participation = _mean([2.0 * value - 1.0 for value in participation_parts])
 
@@ -210,5 +237,41 @@ class BreadthAggregator:
             spy_flow=spy.flow.order_flow_imbalance if spy else None,
             spy_quote_imbalance=spy.flow.quote_imbalance if spy else None,
             spy_spread_bps=spy.flow.average_spread_bps if spy else None,
+            structure_ew=structure_ew,
+            structure_weighted=structure_weighted,
+            pct_structure_bullish=pct_struct_bull,
+            pct_structure_bearish=pct_struct_bear,
+            structure_divergence=structure_divergence,
+            absorption_ew=_mean(absorption_values),
+            absorption_weighted=_weighted(absorption_pairs),
+            cvd_ew=_mean(cvd_values),
+            cvd_weighted=_weighted(cvd_pairs),
+            pct_positive_cvd=_fraction(
+                [None if item.flow.cvd_session is None else item.flow.cvd_session > 0 for item in constituents]
+            ),
+            pct_buy_absorption=_fraction(
+                [None if item.flow.buy_absorption is None else item.flow.buy_absorption > 0.5 for item in constituents]
+            ),
+            pct_sell_absorption=_fraction(
+                [None if item.flow.sell_absorption is None else item.flow.sell_absorption > 0.5 for item in constituents]
+            ),
+            pct_bullish_sweep=_fraction(
+                [None if item.structure.sweep_low_score is None else item.structure.sweep_low_score > 0 for item in constituents]
+            ),
+            pct_bearish_sweep=_fraction(
+                [None if item.structure.sweep_high_score is None else item.structure.sweep_high_score > 0 for item in constituents]
+            ),
+            spy_cvd=spy.flow.cvd_session if spy else None,
+            spy_cvd_divergence=spy.flow.price_cvd_divergence_5m if spy else None,
+            spy_poc_distance=spy.auction.distance_to_poc if spy else None,
+            spy_value_location=(
+                1.0
+                if spy and spy.auction.above_value
+                else -1.0
+                if spy and spy.auction.below_value
+                else 0.0
+                if spy
+                else None
+            ),
             sectors=tuple(sectors),
         )

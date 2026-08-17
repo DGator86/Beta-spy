@@ -6,7 +6,8 @@ from datetime import datetime
 
 import numpy as np
 
-from .models import FlowFeatures, HoldingMeta, MinuteBar, SymbolFeatures
+from .models import AuctionFeatures, FlowFeatures, HoldingMeta, MinuteBar, SymbolFeatures
+from .structure import StructureEngine
 
 
 def _pct_change(values: np.ndarray, periods: int) -> float | None:
@@ -63,6 +64,7 @@ class SymbolIndicatorState:
     session_pv: float = 0.0
     session_volume: float = 0.0
     session_date: object | None = None
+    _structure: StructureEngine = field(default_factory=StructureEngine)
 
     def add_bar(self, bar: MinuteBar) -> None:
         if self.session_date != bar.timestamp.date():
@@ -77,7 +79,12 @@ class SymbolIndicatorState:
         while len(self.bars) > self.max_bars:
             self.bars.popleft()
 
-    def features(self, flow: FlowFeatures, timestamp: datetime | None = None) -> SymbolFeatures | None:
+    def features(
+        self,
+        flow: FlowFeatures,
+        timestamp: datetime | None = None,
+        auction: AuctionFeatures | None = None,
+    ) -> SymbolFeatures | None:
         if not self.bars:
             return None
         bars = list(self.bars)
@@ -133,4 +140,6 @@ class SymbolIndicatorState:
             relative_volume20=rel_volume,
             range_expansion=range_expansion,
             flow=flow,
+            structure=self._structure.extract(bars),
+            auction=auction or AuctionFeatures(),
         )

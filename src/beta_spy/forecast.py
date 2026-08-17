@@ -39,6 +39,13 @@ FEATURE_NAMES = (
     "spy_flow",
     "spy_quote_imbalance",
     "spy_spread_bps",
+    # Batch A — structure. Later families (effort/CVD/auction) stay off this
+    # vector until they survive incremental OOS tests.
+    "structure_ew",
+    "structure_weighted",
+    "pct_structure_bullish",
+    "pct_structure_bearish",
+    "structure_divergence",
 )
 
 
@@ -165,6 +172,31 @@ class OnlineHorizonModel:
     sample_count: int = 0
     _classifier_initialized: bool = False
 
+    def align_features(self, n_features: int) -> None:
+        """Drop a pickled model whose feature width no longer matches Batch A."""
+        expected = getattr(self.scaler, "n_features_in_", None)
+        if expected is None or int(expected) == int(n_features):
+            return
+        self.scaler = StandardScaler()
+        self.classifier = SGDClassifier(
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.0005,
+            learning_rate="optimal",
+            random_state=17,
+        )
+        self.regressor = SGDRegressor(
+            penalty="l2",
+            alpha=0.0005,
+            learning_rate="invscaling",
+            eta0=0.005,
+            random_state=17,
+        )
+        self.pending.clear()
+        self.calibrator = _OnlineCalibrator()
+        self.sample_count = 0
+        self._classifier_initialized = False
+
     def mature(self, timestamp: datetime, spy_price: float) -> list[float]:
         realized: list[float] = []
         while self.pending and self.pending[0].target_time <= timestamp:
@@ -247,6 +279,7 @@ class OnlineForecastStack:
     def step(self, timestamp: datetime, factors: MarketFactors, spy_price: float) -> tuple[HorizonForecast, ...]:
         x = vectorize(factors)
         for model in self.models.values():
+            model.align_features(x.size)
             model.mature(timestamp, spy_price)
         forecasts = tuple(self.models[horizon].predict(factors, x) for horizon in sorted(self.models))
         for model in self.models.values():

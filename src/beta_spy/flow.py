@@ -1,17 +1,31 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from math import sqrt
 
 from .models import FlowFeatures, QuoteTop, TradePrint
 
 
+def _zscore(values: list[float]) -> float | None:
+    if len(values) < 5:
+        return None
+    mean = sum(values) / len(values)
+    var = sum((item - mean) ** 2 for item in values) / (len(values) - 1)
+    if var <= 0:
+        return 0.0
+    return (values[-1] - mean) / sqrt(var)
+
+
 @dataclass
 class FlowAccumulator:
-    """Top-of-book/tape microstructure accumulator for one symbol and one window.
+    """Top-of-book/tape microstructure accumulator for one symbol.
 
-    Aggressor classification is intentionally conservative: prints at/above ask are buys,
-    prints at/below bid are sells, and inside-spread prints use a tick rule only when a prior
-    trade exists. Nothing here claims Level-II depth.
+    Window fields reset after each engine snapshot. Session CVD and NBBO
+    persistence survive the window reset — that is the v1 → v2 change.
+    Aggressor classification stays conservative: at/above ask = buy,
+    at/below bid = sell, inside-spread uses a tick rule. Not Level-II.
     """
 
     buy_volume: float = 0.0
@@ -31,8 +45,24 @@ class FlowAccumulator:
     ask: float | None = None
     bid_size: float | None = None
     ask_size: float | None = None
+    cvd_session: float = 0.0
+    session_date: object | None = None
+    _cvd_marks: deque[tuple[datetime, float, float]] = field(default_factory=deque)
+    _bid_price: float | None = None
+    _ask_price: float | None = None
+    _bid_persist: int = 0
+    _ask_persist: int = 0
+    _bid_replenish: int = 0
+    _ask_replenish: int = 0
+    _bid_withdraw: int = 0
+    _ask_withdraw: int = 0
+    _qi_history: deque[float] = field(default_factory=lambda: deque(maxlen=32))
+    _same_qi_sign: int = 0
+    _last_qi: float | None = None
 
     def on_quote(self, quote: QuoteTop) -> None:
+        prev_bid_size = self.bid_size
+        prev_ask_size = self.ask_size
         self.bid = quote.bid if quote.bid > 0 else self.bid
         self.ask = quote.ask if quote.ask > 0 else self.ask
         self.bid_size = quote.bid_size
@@ -46,28 +76,67 @@ class FlowAccumulator:
         if quote.bid_size is not None and quote.ask_size is not None:
             total = quote.bid_size + quote.ask_size
             if total > 0:
-                self.quote_imbalance_sum += (quote.bid_size - quote.ask_size) / total
+                qi = (quote.bid_size - quote.ask_size) / total
+                self.quote_imbalance_sum += qi
                 self.quote_imbalance_samples += 1
+                if self._last_qi is not None and qi * self._last_qi > 0:
+                    self._same_qi_sign += 1
+                else:
+                    self._same_qi_sign = 1
+                self._last_qi = qi
+                self._qi_history.append(qi)
+        if quote.bid > 0:
+            if self._bid_price == quote.bid:
+                self._bid_persist += 1
+                if quote.bid_size is not None and prev_bid_size is not None:
+                    if quote.bid_size > prev_bid_size:
+                        self._bid_replenish += 1
+                    elif quote.bid_size < prev_bid_size:
+                        self._bid_withdraw += 1
+            else:
+                self._bid_price = quote.bid
+                self._bid_persist = 1
+        if quote.ask > 0:
+            if self._ask_price == quote.ask:
+                self._ask_persist += 1
+                if quote.ask_size is not None and prev_ask_size is not None:
+                    if quote.ask_size > prev_ask_size:
+                        self._ask_replenish += 1
+                    elif quote.ask_size < prev_ask_size:
+                        self._ask_withdraw += 1
+            else:
+                self._ask_price = quote.ask
+                self._ask_persist = 1
 
-    def on_trade(self, trade: TradePrint) -> None:
-        if trade.size <= 0 or trade.price <= 0:
-            return
+    def classify(self, trade: TradePrint) -> int:
         bid = trade.bid if trade.bid is not None else self.bid
         ask = trade.ask if trade.ask is not None else self.ask
-        side = 0
         if ask is not None and ask > 0 and trade.price >= ask:
-            side = 1
-        elif bid is not None and bid > 0 and trade.price <= bid:
-            side = -1
-        elif self.last_trade_price is not None:
+            return 1
+        if bid is not None and bid > 0 and trade.price <= bid:
+            return -1
+        if self.last_trade_price is not None:
             if trade.price > self.last_trade_price:
-                side = 1
-            elif trade.price < self.last_trade_price:
-                side = -1
+                return 1
+            if trade.price < self.last_trade_price:
+                return -1
+        return 0
+
+    def on_trade(self, trade: TradePrint) -> int:
+        if trade.size <= 0 or trade.price <= 0:
+            return 0
+        day = trade.timestamp.date()
+        if self.session_date != day:
+            self.session_date = day
+            self.cvd_session = 0.0
+            self._cvd_marks.clear()
+        side = self.classify(trade)
         if side > 0:
             self.buy_volume += trade.size
+            self.cvd_session += trade.size
         elif side < 0:
             self.sell_volume += trade.size
+            self.cvd_session -= trade.size
         else:
             self.neutral_volume += trade.size
         self.trade_count += 1
@@ -76,8 +145,9 @@ class FlowAccumulator:
             self.first_trade_price = trade.price
         self.previous_trade_price = self.last_trade_price
         self.last_trade_price = trade.price
+        return side
 
-    def snapshot(self, *, window_seconds: float = 60.0) -> FlowFeatures:
+    def snapshot(self, *, window_seconds: float = 60.0, now: datetime | None = None) -> FlowFeatures:
         directional = self.buy_volume + self.sell_volume
         total = directional + self.neutral_volume
         ofi = (self.buy_volume - self.sell_volume) / directional if directional > 0 else None
@@ -90,6 +160,7 @@ class FlowAccumulator:
         avg_size = total / self.trade_count if self.trade_count > 0 else None
         impact = None
         absorption = None
+        move_bps = None
         if self.first_trade_price and self.last_trade_price and directional > 0:
             move_bps = (self.last_trade_price / self.first_trade_price - 1.0) * 10_000.0
             impact = move_bps / max(directional / 10_000.0, 1e-9)
@@ -97,6 +168,58 @@ class FlowAccumulator:
                 expected_sign = 1.0 if ofi >= 0 else -1.0
                 signed_move = expected_sign * move_bps
                 absorption = max(0.0, min(1.0, abs(ofi) * (1.0 - min(max(signed_move, 0.0) / 5.0, 1.0))))
+        buy_abs = sell_abs = None
+        init_buy = init_sell = None
+        if self.buy_volume > 0 and move_bps is not None:
+            init_buy = max(move_bps, 0.0) / (self.buy_volume / 10_000.0)
+            buy_abs = max(0.0, min(1.0, 1.0 - min(max(move_bps, 0.0) / 5.0, 1.0)))
+        if self.sell_volume > 0 and move_bps is not None:
+            init_sell = max(-move_bps, 0.0) / (self.sell_volume / 10_000.0)
+            sell_abs = max(0.0, min(1.0, 1.0 - min(max(-move_bps, 0.0) / 5.0, 1.0)))
+        flow_to_disp = None
+        if ofi is not None and move_bps is not None and abs(ofi) > 1e-9:
+            flow_to_disp = move_bps / ofi
+        mark_time = now or datetime.now(UTC)
+        self._cvd_marks.append((mark_time, self.cvd_session, self.last_trade_price or 0.0))
+        while len(self._cvd_marks) > 400:
+            self._cvd_marks.popleft()
+        cvd_5m = cvd_15m = slope_5 = slope_15 = None
+        div_5 = div_15 = None
+        if len(self._cvd_marks) >= 2:
+            latest_t, latest_cvd, latest_px = self._cvd_marks[-1]
+
+            def _ago(minutes: int) -> tuple[float, float] | None:
+                cutoff = latest_t.timestamp() - minutes * 60
+                for stamp, cvd, px in self._cvd_marks:
+                    if stamp.timestamp() >= cutoff:
+                        return cvd, px
+                return None
+
+            ago5 = _ago(5)
+            ago15 = _ago(15)
+            if ago5 is not None:
+                cvd_5m = latest_cvd - ago5[0]
+                slope_5 = cvd_5m / 5.0
+                if ago5[1] > 0 and latest_px > 0:
+                    px_chg = latest_px - ago5[1]
+                    if px_chg * cvd_5m < 0:
+                        div_5 = abs(cvd_5m) / max(abs(px_chg), 1e-6)
+                    else:
+                        div_5 = 0.0
+            if ago15 is not None:
+                cvd_15m = latest_cvd - ago15[0]
+                slope_15 = cvd_15m / 15.0
+                if ago15[1] > 0 and latest_px > 0:
+                    px_chg = latest_px - ago15[1]
+                    if px_chg * cvd_15m < 0:
+                        div_15 = abs(cvd_15m) / max(abs(px_chg), 1e-6)
+                    else:
+                        div_15 = 0.0
+        cvd_z = _zscore([mark[1] for mark in self._cvd_marks])
+        quotes = max(self.quote_updates, 1)
+        qi_velocity = None
+        if len(self._qi_history) >= 2:
+            qi_velocity = self._qi_history[-1] - self._qi_history[0]
         return FlowFeatures(
             buy_volume=self.buy_volume,
             sell_volume=self.sell_volume,
@@ -110,9 +233,36 @@ class FlowAccumulator:
             absorption=absorption,
             quote_updates=self.quote_updates,
             trades=self.trade_count,
+            signed_delta=self.buy_volume - self.sell_volume,
+            cvd_session=self.cvd_session,
+            cvd_5m=cvd_5m,
+            cvd_15m=cvd_15m,
+            cvd_slope_5m=slope_5,
+            cvd_slope_15m=slope_15,
+            cvd_zscore=cvd_z,
+            price_cvd_divergence_5m=div_5,
+            price_cvd_divergence_15m=div_15,
+            signed_aggressive_volume=self.buy_volume - self.sell_volume,
+            directional_volume=directional,
+            price_displacement_bps=move_bps,
+            flow_to_displacement=flow_to_disp,
+            displacement_per_10k_volume=impact,
+            buy_absorption=buy_abs,
+            sell_absorption=sell_abs,
+            initiative_buy_efficiency=init_buy,
+            initiative_sell_efficiency=init_sell,
+            best_bid_size_persistence=self._bid_persist / quotes,
+            best_ask_size_persistence=self._ask_persist / quotes,
+            best_bid_replenishment=self._bid_replenish / quotes,
+            best_ask_replenishment=self._ask_replenish / quotes,
+            best_bid_withdrawal_rate=self._bid_withdraw / quotes,
+            best_ask_withdrawal_rate=self._ask_withdraw / quotes,
+            quote_imbalance_velocity=qi_velocity,
+            quote_imbalance_persistence=self._same_qi_sign / quotes,
         )
 
     def reset(self) -> None:
+        """Clear the snapshot window. Session CVD and NBBO memory stay."""
         self.buy_volume = 0.0
         self.sell_volume = 0.0
         self.neutral_volume = 0.0
@@ -123,5 +273,11 @@ class FlowAccumulator:
         self.quote_imbalance_sum = 0.0
         self.quote_imbalance_samples = 0
         self.first_trade_price = None
-        self.last_trade_price = None
         self.total_notional = 0.0
+        self._bid_replenish = 0
+        self._ask_replenish = 0
+        self._bid_withdraw = 0
+        self._ask_withdraw = 0
+        self._bid_persist = 0
+        self._ask_persist = 0
+        self._same_qi_sign = 0
