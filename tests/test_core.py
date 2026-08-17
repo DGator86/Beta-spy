@@ -296,8 +296,8 @@ def test_high_conviction_gates_require_agreement_magnitude_and_breadth():
     decision = engine.decide(ts, factors(), forecasts(0.66, 0.5, 8.0))
     assert decision.action == "TRADE"
 
-    # Forecast move too small to clear option friction: gated.
-    decision = engine.decide(ts, factors(), forecasts(0.66, 0.5, 4.0))
+    # Forecast move too small and probability not extreme enough to override.
+    decision = engine.decide(ts, factors(), forecasts(0.58, 0.5, 1.0))
     assert decision.action == "NO_TRADE"
     assert decision.gates["forecast_magnitude"] is False
 
@@ -306,9 +306,9 @@ def test_high_conviction_gates_require_agreement_magnitude_and_breadth():
     assert decision.action == "NO_TRADE"
     assert decision.gates["multi_horizon"] is False
 
-    # Two breadth dissenters break the supermajority: gated.
+    # Three breadth dissenters break a 5-factor majority: gated.
     dissent = factors()
-    dissent = replace(dissent, trend_ew=-0.6, momentum_ew=-0.6)
+    dissent = replace(dissent, trend_ew=-0.6, momentum_ew=-0.6, participation=-0.6)
     decision = engine.decide(ts, dissent, forecasts(0.66, 0.5, 8.0))
     assert decision.action == "NO_TRADE"
     assert decision.gates["breadth_confirmation"] is False

@@ -46,18 +46,15 @@ class DecisionEngine:
         # from the neutral-gate threshold so tuning one does not move the other.
         regime_reference_return: float = 0.00016,
         blocked_windows_from_open: tuple[tuple[int, int], ...] = BLOCKED_WINDOWS_FROM_OPEN,
-        # High-conviction gate set, selected on the accuracy frontier under
-        # CPCV (70 day-block partitions, 15 sessions): demanding all three
-        # horizons agree at confidence > 0.30, a breadth supermajority, and a
-        # forecast magnitude of at least 6 bps yields 79% directional accuracy
-        # with the worst partition decile at 76.5% and 100% of partitions at
-        # or above 75%, at ~5 trades/day and +5.9 bps captured per trade.
-        # Accuracy rises smoothly along the magnitude filter (68% -> 73% ->
-        # 76% -> 79%), a dose-response consistent with a real effect rather
-        # than a fitted island.
+        # All three horizons must still agree with conviction. Magnitude was
+        # 6 bps (79% on mixed tape, ~5 trades/day) and missed 2026-08-17: a
+        # -42 bps grind where the classifier was bearish all day but the
+        # compressed regressor printed ~1.7 bps expected vs ~3.8 realized.
+        # 2 bps is the option-friction floor; historically ~17 trades/day at
+        # 68% / +3.7 bps, CPCV worst-decile still 62%.
         votes_required: int = 3,
         vote_confidence: float = 0.30,
-        min_expected_move_bps: float = 6.0,
+        min_expected_move_bps: float = 2.0,
     ) -> None:
         self.primary_horizon = primary_horizon
         self.min_probability = min_probability
@@ -131,13 +128,12 @@ class DecisionEngine:
             _sign(factors.participation),
         ]
         known_breadth = [item for item in breadth_signals if item != 0]
-        # Supermajority: at least three known breadth factors, and at most one
-        # dissenter among them.
+        # Majority of known breadth factors. Supermajority sat out the
+        # 2026-08-17 grind: SPY can trend on a handful of names while
+        # equal-weight constituents lag.
         breadth_confirm = (
-            len(known_breadth) >= 3
-            and sum(item == direction for item in known_breadth)
-            >= max(3, len(known_breadth) - 1)
-            if direction
+            sum(item == direction for item in known_breadth) >= max(2, len(known_breadth) // 2 + 1)
+            if direction and known_breadth
             else False
         )
         flow_signals = [_sign(factors.flow_ew), _sign(factors.flow_weighted), _sign(factors.spy_flow)]
@@ -149,7 +145,8 @@ class DecisionEngine:
             "covered_weight": factors.covered_weight >= self.min_covered_weight,
             "directional_edge": direction != 0,
             "multi_horizon": agreement,
-            "forecast_magnitude": abs(primary.expected_return_bps) >= self.min_expected_move_bps,
+            "forecast_magnitude": abs(primary.expected_return_bps) >= self.min_expected_move_bps
+            or abs(primary.probability_up - 0.5) >= 0.12,
             "breadth_confirmation": breadth_confirm,
             "flow_confirmation": flow_confirm,
             "spy_liquidity": liquidity_ok,
