@@ -38,6 +38,13 @@ class SessionCvd:
     last_price: float | None = None
     _marks: deque[tuple[datetime, float, float]] = field(default_factory=deque)
 
+    def restore(self, cvd: float, session_date, *, last_price: float | None = None) -> None:
+        """Rehydrate compressed constituent CVD from minute_flow.payload."""
+        self.session_date = session_date
+        self.cvd = float(cvd)
+        if last_price is not None and last_price > 0:
+            self.last_price = last_price
+
     def on_trade(self, trade: TradePrint, side: int) -> None:
         day = trade.timestamp.date()
         if self.session_date != day:

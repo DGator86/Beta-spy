@@ -9,7 +9,16 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from .models import Decision, FlowFeatures, HoldingMeta, HorizonForecast, MarketFactors, MinuteBar, TradePrint
+from .models import (
+    Decision,
+    FlowFeatures,
+    HoldingMeta,
+    HorizonForecast,
+    MarketFactors,
+    MinuteBar,
+    QuoteTop,
+    TradePrint,
+)
 
 SCHEMA = """
 PRAGMA journal_mode=WAL;
@@ -116,11 +125,23 @@ _CORE_FLOW_FIELDS = (
 )
 
 
-def _flow_payload(flow: FlowFeatures) -> str | None:
+def _flow_payload(flow: FlowFeatures, extra: dict[str, object] | None = None) -> str | None:
     extras = {key: value for key, value in asdict(flow).items() if key not in _CORE_FLOW_FIELDS}
+    if extra:
+        extras.update({key: value for key, value in extra.items() if value is not None})
     if not extras or all(value is None or value == 0 or value == 0.0 for value in extras.values()):
         return None
     return json.dumps(extras, separators=(",", ":"))
+
+
+def flow_has_tape(flow: FlowFeatures) -> bool:
+    return (
+        flow.trades > 0
+        or flow.quote_updates > 0
+        or flow.buy_volume > 0
+        or flow.sell_volume > 0
+        or flow.neutral_volume > 0
+    )
 
 
 def _flow_from_row(row: tuple) -> FlowFeatures:
@@ -212,10 +233,24 @@ class Tape500Store:
             )
             self.connection.commit()
 
-    def save_flow(self, timestamp: datetime, symbol: str, flow: FlowFeatures) -> None:
-        self.save_flows([(timestamp, symbol, flow)])
+    def save_flow(
+        self,
+        timestamp: datetime,
+        symbol: str,
+        flow: FlowFeatures,
+        *,
+        extra: dict[str, object] | None = None,
+    ) -> None:
+        extras = {symbol: extra} if extra else None
+        self.save_flows([(timestamp, symbol, flow)], extras=extras)
 
-    def save_flows(self, rows: Iterable[tuple[datetime, str, FlowFeatures]]) -> None:
+    def save_flows(
+        self,
+        rows: Iterable[tuple[datetime, str, FlowFeatures]],
+        *,
+        extras: dict[str, dict[str, object]] | None = None,
+    ) -> None:
+        extras = extras or {}
         with self.lock:
             self.connection.executemany(
                 """
@@ -230,7 +265,8 @@ class Tape500Store:
                         _iso(timestamp), symbol, flow.buy_volume, flow.sell_volume, flow.neutral_volume,
                         flow.order_flow_imbalance, flow.quote_imbalance, flow.average_spread_bps,
                         flow.trade_intensity, flow.average_trade_size, flow.price_impact_bps_per_10k,
-                        flow.absorption, flow.quote_updates, flow.trades, _flow_payload(flow),
+                        flow.absorption, flow.quote_updates, flow.trades,
+                        _flow_payload(flow, extras.get(symbol)),
                     )
                     for timestamp, symbol, flow in rows
                 ],
@@ -250,6 +286,26 @@ class Tape500Store:
             )
             rows = cursor.fetchall()
         return {str(row[0]): _flow_from_row(row) for row in rows}
+
+    def session_cvd_for_timestamp(self, timestamp: datetime) -> dict[str, float]:
+        """Constituent session CVD compressed into minute_flow.payload."""
+        with self.lock:
+            cursor = self.connection.execute(
+                "SELECT symbol, payload FROM minute_flow WHERE timestamp=?",
+                (_iso(timestamp),),
+            )
+            rows = cursor.fetchall()
+        out: dict[str, float] = {}
+        for symbol, payload in rows:
+            if not payload:
+                continue
+            try:
+                parsed = json.loads(str(payload))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(parsed, dict) and parsed.get("cvd_session") is not None:
+                out[str(symbol)] = float(parsed["cvd_session"])
+        return out
 
     def save_factors(self, factors: MarketFactors) -> None:
         with self.lock:
@@ -345,6 +401,70 @@ class Tape500Store:
                 bid=float(row[4]) if row[4] is not None else None,
                 ask=float(row[5]) if row[5] is not None else None,
             )
+
+    def iter_spy_quotes(self, day) -> Iterator[QuoteTop]:
+        start = datetime(day.year, day.month, day.day, tzinfo=UTC)
+        end = start + timedelta(days=1)
+        with self.lock:
+            rows = self.connection.execute(
+                """
+                SELECT timestamp,bid,ask,bid_size,ask_size
+                FROM spy_quotes
+                WHERE timestamp >= ? AND timestamp < ?
+                ORDER BY timestamp
+                """,
+                (_iso(start), _iso(end)),
+            ).fetchall()
+        for row in rows:
+            yield QuoteTop(
+                symbol="SPY",
+                timestamp=datetime.fromisoformat(str(row[0]).replace("Z", "+00:00")),
+                bid=float(row[1]),
+                ask=float(row[2]),
+                bid_size=float(row[3]) if row[3] is not None else None,
+                ask_size=float(row[4]) if row[4] is not None else None,
+            )
+
+    def backfill_spy_minute_flow(self, day) -> int:
+        """Rebuild SPY one-minute flow windows from stored prints.
+
+        Live snapshots used to drop the window on reset without writing
+        minute_flow. Days that still have spy_trades can be recovered.
+        """
+        from .flow import FlowAccumulator
+
+        accumulator = FlowAccumulator()
+        current_minute: datetime | None = None
+        saved = 0
+
+        def flush(stamp: datetime) -> None:
+            nonlocal saved
+            flow = accumulator.snapshot(now=stamp)
+            if flow.trades > 0:
+                self.save_flow(stamp, "SPY", flow)
+                saved += 1
+            accumulator.reset()
+
+        for trade in self.iter_spy_trades(day):
+            minute = trade.timestamp.astimezone(UTC).replace(second=0, microsecond=0)
+            if current_minute is None:
+                current_minute = minute
+            elif minute != current_minute:
+                flush(current_minute)
+                current_minute = minute
+            if trade.bid is not None and trade.ask is not None and trade.ask >= trade.bid > 0:
+                accumulator.on_quote(
+                    QuoteTop(
+                        symbol="SPY",
+                        timestamp=trade.timestamp,
+                        bid=trade.bid,
+                        ask=trade.ask,
+                    )
+                )
+            accumulator.on_trade(trade)
+        if current_minute is not None:
+            flush(current_minute)
+        return saved
 
     def save_decision(self, decision: Decision) -> None:
         with self.lock:

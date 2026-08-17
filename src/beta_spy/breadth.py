@@ -8,6 +8,17 @@ from math import sqrt
 from .models import MarketFactors, SectorFactors, SymbolFeatures
 
 
+def _value_location(spy: SymbolFeatures | None) -> float | None:
+    """+1 above value, -1 below, 0 inside. None when the auction was never built."""
+    if spy is None or spy.auction.session_poc is None:
+        return None
+    if spy.auction.above_value:
+        return 1.0
+    if spy.auction.below_value:
+        return -1.0
+    return 0.0
+
+
 def _clip(value: float, lower: float = -1.0, upper: float = 1.0) -> float:
     return max(lower, min(upper, value))
 
@@ -301,14 +312,6 @@ class BreadthAggregator:
             spy_cvd=spy.auction.cvd_session if spy else None,
             spy_cvd_divergence=spy.auction.price_cvd_divergence_5m if spy else None,
             spy_poc_distance=spy.auction.distance_to_poc if spy else None,
-            spy_value_location=(
-                1.0
-                if spy and spy.auction.above_value
-                else -1.0
-                if spy and spy.auction.below_value
-                else 0.0
-                if spy
-                else None
-            ),
+            spy_value_location=_value_location(spy),
             sectors=tuple(sectors),
         )

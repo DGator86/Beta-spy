@@ -22,7 +22,7 @@ from .models import (
     SymbolFeatures,
     TradePrint,
 )
-from .storage import Tape500Store
+from .storage import Tape500Store, flow_has_tape
 
 
 def _event_time(value: Any) -> datetime:
@@ -196,6 +196,21 @@ class Tape500Engine:
         self.flows["SPY"].last_trade_price = scratch.last_trade_price
         self._spy_micro_recovered = True
 
+    def apply_print(self, trade: TradePrint) -> None:
+        """Update window flow, session CVD, and SPY VAP without synthesizing bars.
+
+        HistoricalReplay uses this so stored spy_trades rebuild auction/CVD
+        without double-counting minute_bars.
+        """
+        side = self.flows[trade.symbol].on_trade(trade)
+        self.cvd[trade.symbol].on_trade(trade, side)
+        if trade.symbol == "SPY":
+            self.auction.on_trade(trade, side)
+
+    def apply_quote(self, quote: QuoteTop) -> None:
+        """NBBO into the current flow window. Does not persist spy_quotes."""
+        self.flows[quote.symbol].on_quote(quote)
+
     def on_quote(self, quote: QuoteTop) -> None:
         self.flows[quote.symbol].on_quote(quote)
         if self.store is not None and quote.symbol == "SPY":
@@ -290,6 +305,9 @@ class Tape500Engine:
     def build_snapshot(self, timestamp: datetime) -> EngineSnapshot | None:
         self.flush_completed_bars(timestamp)
         symbol_features: list[SymbolFeatures] = []
+        persist_flows: list[tuple[datetime, str, FlowFeatures]] = []
+        persist_extras: dict[str, dict[str, object]] = {}
+        stamp = timestamp.astimezone(UTC).replace(second=0, microsecond=0)
         for symbol, state in self.states.items():
             flow = self.flow_overrides.get(symbol) or self.flows[symbol].snapshot(now=timestamp)
             cvd = self.cvd[symbol].features(timestamp)
@@ -300,6 +318,10 @@ class Tape500Engine:
             feature = state.features(flow, timestamp, auction=auction)
             if feature is not None:
                 symbol_features.append(feature)
+            if self.store is not None and (flow_has_tape(flow) or cvd.cvd_session not in (None, 0, 0.0)):
+                persist_flows.append((stamp, symbol, flow))
+                if cvd.cvd_session is not None:
+                    persist_extras[symbol] = {"cvd_session": cvd.cvd_session}
         factors = self.aggregator.aggregate(
             symbol_features,
             timestamp=timestamp,
@@ -342,6 +364,8 @@ class Tape500Engine:
             self.store.save_factors(factors)
             self.store.save_forecasts(timestamp, forecasts)
             self.store.save_decision(decision)
+            if persist_flows:
+                self.store.save_flows(persist_flows, extras=persist_extras)
         for flow in self.flows.values():
             flow.reset()
         self.flow_overrides.clear()
