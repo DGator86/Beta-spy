@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable
 from dataclasses import asdict
 from datetime import UTC, datetime
+from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
@@ -16,6 +17,7 @@ from .engine import Tape500Engine
 from .ledger import PaperLedger
 from .models import EngineSnapshot
 from .options import OptionPlan, plan_best_strategy
+from .session_policy import is_rth_entry
 
 TRADIER_API = "https://api.tradier.com/v1"
 TRADIER_WS = "wss://ws.tradier.com/v1/markets/events"
@@ -242,17 +244,23 @@ class TradierMarketStream:
             self.hub.update(timestamp=timestamp.isoformat(), status="WARMING", ledger=ledger_stats)
             return
         plan: OptionPlan | None = None
-        if snapshot.decision.action in {"TRADE", "TRADE_NEUTRAL"}:
+        if snapshot.decision.action in {"TRADE", "TRADE_NEUTRAL"} and is_rth_entry(timestamp):
             try:
                 plan = self._option_plan(snapshot)
             except Exception as exc:  # noqa: BLE001 - chain fetch must not kill the tape
                 self.hub.patch_stream(last_error=f"option-plan failed: {exc}")
                 plan = None
         ledger_stats = None
+        spy_price = None
+        spy = next((item for item in snapshot.symbols if item.symbol == "SPY"), None)
+        if spy is not None and spy.close > 0:
+            spy_price = float(spy.close)
         if self.ledger is not None:
-            if plan is not None:
-                self.ledger.open_position(plan, timestamp)
-            self._mark_ledger(timestamp)
+            quotes = self._mark_ledger(timestamp, spy_price=spy_price)
+            if plan is not None and is_rth_entry(timestamp) and snapshot.decision.action == "TRADE":
+                self.ledger.flatten_for_reverse(plan, timestamp, quotes)
+            if plan is not None and is_rth_entry(timestamp):
+                self.ledger.open_position(plan, timestamp, spy_price=spy_price)
             ledger_stats = self.ledger.stats(timestamp)
         self.hub.update(
             timestamp=timestamp.isoformat(),
@@ -262,27 +270,35 @@ class TradierMarketStream:
             status="LIVE",
         )
 
-    def _mark_ledger(self, timestamp: datetime) -> None:
+    def _mark_ledger(
+        self, timestamp: datetime, *, spy_price: float | None = None
+    ) -> dict[str, tuple[float, float]]:
         assert self.ledger is not None
+        quotes: dict[str, tuple[float, float]] = {}
         symbols = self.ledger.open_symbols()
         if not symbols:
-            return
+            return quotes
         try:
             payload = self._get("/markets/quotes", {"symbols": ",".join(symbols), "greeks": "false"})
         except httpx.HTTPError:
             # A failed quote fetch only delays the next mark; never let it
             # take the snapshot loop down.
-            return
+            return quotes
         rows = (payload.get("quotes") or {}).get("quote") or []
         if isinstance(rows, dict):
             rows = [rows]
-        quotes: dict[str, tuple[float, float]] = {}
         for row in rows:
             symbol = str(row.get("symbol") or "")
             bid, ask = row.get("bid"), row.get("ask")
             if symbol and bid is not None and ask is not None:
                 quotes[symbol] = (float(bid), float(ask))
-        self.ledger.mark_positions(quotes, timestamp)
+        self.ledger.mark_positions(
+            quotes,
+            timestamp,
+            spy_price=spy_price,
+            tradeable_impulse=bool(self.engine.decisions.tradeable_impulse),
+        )
+        return quotes
 
     def _option_plan(self, snapshot: EngineSnapshot) -> OptionPlan | None:
         now = time.monotonic()
@@ -294,11 +310,13 @@ class TradierMarketStream:
                 dates = [dates]
             if not dates:
                 return None
-            today = datetime.now(UTC).date().isoformat()
-            eligible = sorted(date for date in dates if date >= today)
-            if not eligible:
+            today = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+            # 0DTE only: never fall back to the next weekly/1DTE expiry.
+            if today not in dates:
+                self._cached_chain = None
+                self._cached_expiration = None
                 return None
-            expiration = today if today in dates else eligible[0]
+            expiration = today
             chain = self._get(
                 "/markets/options/chains",
                 {"symbol": "SPY", "expiration": expiration, "greeks": "true"},
@@ -328,8 +346,13 @@ class TradierMarketStream:
             self._cached_chain = normalized
             self._cached_expiration = expiration
             self._last_option_refresh = now
+        session_day = datetime.now(ZoneInfo("America/New_York")).date().isoformat()
+        if self._cached_expiration != session_day:
+            self._cached_chain = None
+            self._cached_expiration = None
+            return None
         normalized = self._cached_chain or []
-        expiration = self._cached_expiration or datetime.now(UTC).date().isoformat()
+        expiration = session_day
         primary = next(
             (
                 forecast
@@ -375,6 +398,7 @@ class TradierMarketStream:
             spy_price=spy_price,
             expected_move_dollars=expected_move_dollars,
             minutes_to_expiry=minutes_to_expiry,
+            max_width=3.5,
         )
 
     def _get(self, path: str, params: dict[str, str]) -> dict[str, Any]:

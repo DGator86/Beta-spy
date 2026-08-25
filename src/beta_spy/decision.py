@@ -2,18 +2,23 @@ from __future__ import annotations
 
 from collections import deque
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from .models import Decision, HorizonForecast, MarketFactors
+from .session_policy import (
+    FAILED_EXTREME_DOLLARS,
+    classify_situation,
+    condor_allowed,
+    empty_swing,
+    is_rth_entry,
+    minutes_from_open,
+    remaining_to_flatten_minutes,
+    session_date,
+    swing_step,
+)
 
-_EASTERN = ZoneInfo("America/New_York")
-
-# Session windows (minutes from the 9:30 ET open) where directional trades
-# are blocked. Chosen by CPCV time-of-day analysis: the lunch reversal window
-# was negative in 100% of 70 day-block partitions (-3.4 bps per trade), the
-# 14:30 window in 76%, and the final half hour in 70% (where 0DTE gamma also
-# makes exits unreliable). The strong 11:00-13:00 stretch stays open.
-BLOCKED_WINDOWS_FROM_OPEN = ((150, 180), (300, 330), (360, 390))
+# Lunch and power-hour CPCV blocks sat out the Aug 19 12:19 put (+$140) and
+# the 15:33 dump (+$89). RTH 09:40–15:40 is the only time gate now.
+BLOCKED_WINDOWS_FROM_OPEN: tuple[tuple[int, int], ...] = ()
 
 
 def _sign(value: float | None, deadband: float = 0.05) -> int:
@@ -80,6 +85,13 @@ class DecisionEngine:
         self._recent_returns: deque[float] = deque(maxlen=quiet_window_minutes)
         self._last_session: object = None
         self._session_open_price: float | None = None
+        self._session_high: float | None = None
+        self._session_low: float | None = None
+        self._swing = empty_swing()
+
+    @property
+    def tradeable_impulse(self) -> bool:
+        return bool(self._swing.tradeable)
 
     @property
     def session_open_price(self) -> float | None:
@@ -91,20 +103,26 @@ class DecisionEngine:
             self._session_open_price = float(price)
 
     def _minutes_from_open(self, timestamp: datetime) -> int:
-        eastern = timestamp.astimezone(_EASTERN)
-        return (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+        return minutes_from_open(timestamp)
 
     def _session_hold_minutes(self, timestamp: datetime) -> float:
-        eastern = timestamp.astimezone(_EASTERN)
-        end = eastern.replace(hour=15, minute=50, second=0, microsecond=0)
-        return max(15.0, (end - eastern).total_seconds() / 60.0)
+        return remaining_to_flatten_minutes(timestamp)
 
     def _session_window_open(self, timestamp: datetime) -> bool:
+        if not is_rth_entry(timestamp):
+            return False
         if not self.blocked_windows_from_open:
             return True
-        eastern = timestamp.astimezone(_EASTERN)
-        from_open = (eastern.hour * 60 + eastern.minute) - (9 * 60 + 30)
+        from_open = minutes_from_open(timestamp)
         return not any(start <= from_open < end for start, end in self.blocked_windows_from_open)
+
+    def _note_session_price(self, spy_price: float | None, timestamp: datetime | None = None) -> None:
+        if spy_price is None or spy_price <= 0:
+            return
+        px = float(spy_price)
+        self._session_high = px if self._session_high is None else max(self._session_high, px)
+        self._session_low = px if self._session_low is None else min(self._session_low, px)
+        self._swing = swing_step(self._swing, px, now=timestamp)
 
     def decide(
         self,
@@ -113,11 +131,15 @@ class DecisionEngine:
         forecasts: tuple[HorizonForecast, ...],
         spy_price: float | None = None,
     ) -> Decision:
-        session_day = timestamp.date()
+        session_day = session_date(timestamp)
         if self._last_session is not None and session_day != self._last_session:
             self._recent_returns.clear()
             self._session_open_price = None
+            self._session_high = None
+            self._session_low = None
+            self._swing = empty_swing()
         self._last_session = session_day
+        self._note_session_price(spy_price, timestamp)
         if (
             spy_price is not None
             and spy_price > 0
@@ -183,18 +205,68 @@ class DecisionEngine:
             session_bias_ok = False
         if direction < 0 and open_bps is not None and open_bps >= self.session_bias_bps:
             session_bias_ok = False
+        failed_high = (
+            spy_price is not None
+            and self._session_high is not None
+            and (self._session_high - float(spy_price)) >= FAILED_EXTREME_DOLLARS
+        )
+        failed_low = (
+            spy_price is not None
+            and self._session_low is not None
+            and (float(spy_price) - self._session_low) >= FAILED_EXTREME_DOLLARS
+        )
+        session_range = None
+        if self._session_high is not None and self._session_low is not None:
+            session_range = self._session_high - self._session_low
+        impulse_now = bool(
+            self._swing.tradeable
+            or self._swing.reversed_from_tradeable
+            or self._swing.pending_direction
+        )
+        situation = classify_situation(
+            minutes_open=minutes_from_open(timestamp),
+            session_range=session_range,
+            confirmed_impulse=impulse_now,
+            had_tradeable_impulse=self._swing.had_tradeable,
+        )
+        if impulse_now and self._swing.direction != 0:
+            direction = self._swing.pending_direction or self._swing.direction
+            bullish = direction > 0
+            bearish = direction < 0
+        elif situation == "TREND" and self._swing.last_tradeable_direction:
+            direction = self._swing.last_tradeable_direction
+            bullish = direction > 0
+            bearish = direction < 0
+        # Failed extremes from this session override "don't fade the open":
+        # Thursday's winning puts were shorts of rallies that were still above
+        # the open. Causal version: only after a $0.80 reversal off the high.
+        if failed_high and direction < 0:
+            session_bias_ok = True
+        if failed_low and direction > 0:
+            session_bias_ok = True
+        if situation == "IMPULSE" and impulse_now:
+            session_bias_ok = True
+        trend_aligned = not (
+            (failed_high and direction > 0) or (failed_low and direction < 0)
+        )
+        structure_override = bool(direction) and (
+            (failed_high and direction < 0)
+            or (failed_low and direction > 0)
+            or (situation == "IMPULSE" and impulse_now)
+        )
         gates = {
             "coverage": factors.coverage_ratio >= self.min_coverage,
             "covered_weight": factors.covered_weight >= self.min_covered_weight,
             "directional_edge": direction != 0,
-            "multi_horizon": agreement,
+            "multi_horizon": agreement or structure_override,
             "forecast_magnitude": abs(primary.expected_return_bps) >= self.min_expected_move_bps
             or abs(primary.probability_up - 0.5) >= 0.12,
-            "breadth_confirmation": breadth_confirm,
-            "flow_confirmation": flow_confirm,
+            "breadth_confirmation": breadth_confirm or structure_override,
+            "flow_confirmation": flow_confirm or structure_override,
             "spy_liquidity": liquidity_ok,
             "session_window": self._session_window_open(timestamp),
             "session_bias": session_bias_ok,
+            "trend_alignment": trend_aligned,
         }
         reasons: list[str] = []
         labels = {
@@ -208,6 +280,7 @@ class DecisionEngine:
             "spy_liquidity": "SPY spread is too wide",
             "session_window": "Session window is historically unprofitable for directional trades",
             "session_bias": "Forecast fades a cash session that has not reclaimed the open",
+            "trend_alignment": "Forecast leans against a failed session extreme",
         }
         for key, passed in gates.items():
             if not passed:
@@ -222,6 +295,38 @@ class DecisionEngine:
             (abs(factors.participation or 0.0), 0.10),
         ]
         score = sum(value * weight for value, weight in score_components)
+        if spy_price is not None and situation in {"WATCH", "WARMUP", "CLOSED"}:
+            return Decision(
+                timestamp=timestamp,
+                action="NO_TRADE",
+                direction="FLAT",
+                confidence=primary.confidence,
+                score=score,
+                primary_horizon=self.primary_horizon,
+                gates={**gates, "situation": False},
+                reasons=(f"Situation {situation}: sit until a $1.40 impulse or a 90-minute range",),
+            )
+        if spy_price is not None and situation == "RANGE":
+            forced = self._neutral_premium_decision(
+                timestamp,
+                factors,
+                forecasts,
+                gates,
+                open_bps=open_bps,
+                force_range=True,
+            )
+            if forced is not None:
+                return forced
+            return Decision(
+                timestamp=timestamp,
+                action="NO_TRADE",
+                direction="FLAT",
+                confidence=primary.confidence,
+                score=score,
+                primary_horizon=self.primary_horizon,
+                gates={**gates, "situation": False},
+                reasons=("Range day: condor not constructable, no directional debit",),
+            )
         if all(gates.values()):
             side = "BULLISH" if direction > 0 else "BEARISH"
             structure = "CALL_DEBIT_SPREAD" if direction > 0 else "PUT_DEBIT_SPREAD"
@@ -236,9 +341,7 @@ class DecisionEngine:
                 recent_mean = sum(self._recent_returns) / len(self._recent_returns)
                 regime_multiplier = min(max(recent_mean / self.regime_reference_return, 0.75), 1.5)
             risk_multiplier = float(min(max(edge_multiplier * regime_multiplier, 0.5), 2.5))
-            hold_minutes = float(self.primary_horizon)
-            if open_bps is not None and abs(open_bps) >= self.session_hold_bps:
-                hold_minutes = self._session_hold_minutes(timestamp)
+            hold_minutes = self._session_hold_minutes(timestamp)
             return Decision(
                 timestamp=timestamp,
                 action="TRADE",
@@ -274,6 +377,7 @@ class DecisionEngine:
         directional_gates: dict[str, bool],
         *,
         open_bps: float | None = None,
+        force_range: bool = False,
     ) -> Decision | None:
         """Sell defined-risk premium (iron condor) only on a genuinely quiet tape.
 
@@ -306,18 +410,22 @@ class DecisionEngine:
             trend_day = True
         if vwap_bps is not None and abs(vwap_bps) >= self.session_short_vol_bps:
             trend_day = True
+        session_range = None
+        if self._session_high is not None and self._session_low is not None:
+            session_range = self._session_high - self._session_low
+        tight_range_day = condor_allowed(
+            minutes_open=minutes_from_open(timestamp),
+            session_range=session_range,
+            trend_day=trend_day,
+            had_tradeable_impulse=self._swing.had_tradeable,
+        )
         gates = {
             "coverage": directional_gates.get("coverage", False),
             "covered_weight": directional_gates.get("covered_weight", False),
             "spy_liquidity": directional_gates.get("spy_liquidity", False),
-            "no_directional_edge": max_edge < self.neutral_max_edge,
-            "quiet_tape": bool(
-                window_full
-                and recent_mean is not None
-                and recent_mean <= self.quiet_return_threshold
-                and factors.volatility_weighted is not None
-                and factors.volatility_weighted <= self.quiet_volatility_threshold
-            ),
+            "session_window": directional_gates.get("session_window", False),
+            "no_directional_edge": True if force_range else max_edge < self.neutral_max_edge,
+            "quiet_tape": tight_range_day,
             "not_a_trend_day": not trend_day,
         }
         if not all(gates.values()):
@@ -333,4 +441,5 @@ class DecisionEngine:
             reasons=("Quiet tape with no directional edge: sell defined-risk premium",),
             structure="IRON_CONDOR",
             risk_multiplier=0.5,
+            hold_minutes=remaining_to_flatten_minutes(timestamp),
         )

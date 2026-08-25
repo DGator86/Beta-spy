@@ -111,22 +111,34 @@ def test_pending_entry_times_out_and_pays_up(tmp_path):
     assert row["entry_price"] == 0.5
 
 
-def test_debit_spread_takes_profit_and_reports(tmp_path):
+def test_debit_spread_keeps_running_winners(tmp_path):
     ledger = _ledger(tmp_path)
     _fill_debit(ledger)
-    # Long leg sells at 1.75, short buys back at 0.10: value 1.65 vs 1.10 in.
+    # +$55 is a working debit, not 78% of max profit — do not chop it at 15 minutes.
     quotes = {
         "SPY260817C00600000": (1.75, 1.85),
         "SPY260817C00605000": (0.05, 0.10),
     }
-    closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=3))
-    assert len(closed) == 1
-    assert closed[0]["exit_reason"] == "TAKE_PROFIT"
-    assert closed[0]["realized_pnl_dollars"] == 55.0
-    stats = ledger.stats(NOW + timedelta(minutes=4))
-    assert stats["closed_count"] == 1
-    assert stats["wins"] == 1
-    assert stats["day_realized_pnl_dollars"] == 55.0
+    assert ledger.mark_positions(quotes, NOW + timedelta(minutes=3)) == []
+    assert ledger.mark_positions(quotes, NOW + timedelta(minutes=16)) == []
+    row = ledger._rows(("OPEN",))[0]
+    assert row["unrealized_pnl_dollars"] == 55.0
+
+
+def test_debit_spread_trails_giveback(tmp_path):
+    ledger = _ledger(tmp_path)
+    _fill_debit(ledger)
+    runup = {
+        "SPY260817C00600000": (2.40, 2.50),
+        "SPY260817C00605000": (0.05, 0.10),
+    }
+    assert ledger.mark_positions(runup, NOW + timedelta(minutes=5)) == []
+    giveback = {
+        "SPY260817C00600000": (1.55, 1.65),
+        "SPY260817C00605000": (0.05, 0.10),
+    }
+    closed = ledger.mark_positions(giveback, NOW + timedelta(minutes=8))
+    assert closed[0]["exit_reason"] == "PROFIT_TRAIL"
 
 
 def test_debit_spread_stops_out(tmp_path):
@@ -141,17 +153,23 @@ def test_debit_spread_stops_out(tmp_path):
     assert closed[0]["realized_pnl_dollars"] == -60.0
 
 
-def test_directional_position_closes_at_horizon(tmp_path):
+def test_directional_position_does_not_die_on_the_horizon_clock(tmp_path):
     ledger = _ledger(tmp_path)
     _fill_debit(ledger)
-    # Mark near entry: no profit target or stop is touched.
     quotes = {
         "SPY260817C00600000": (2.0, 2.1),
         "SPY260817C00605000": (0.9, 1.0),
     }
     assert ledger.mark_positions(quotes, NOW + timedelta(minutes=5)) == []
-    closed = ledger.mark_positions(quotes, NOW + timedelta(minutes=16))
-    assert closed[0]["exit_reason"] == "HORIZON"
+    assert ledger.mark_positions(quotes, NOW + timedelta(minutes=16)) == []
+    closed = ledger.mark_positions(quotes, datetime(2026, 8, 17, 19, 55, tzinfo=UTC))
+    assert closed[0]["exit_reason"] == "FORCED_FLAT"
+
+
+def test_overnight_entries_are_refused(tmp_path):
+    ledger = _ledger(tmp_path)
+    overnight = datetime(2026, 8, 18, 2, 0, tzinfo=UTC)
+    assert ledger.open_position(_debit_plan(), overnight) is None
 
 
 def test_condor_takes_profit_on_premium_decay(tmp_path):

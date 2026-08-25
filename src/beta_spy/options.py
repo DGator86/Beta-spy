@@ -4,6 +4,8 @@ import math
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable, Iterator
 
+from .session_policy import condor_geometry_ok, debit_premium_ok, prefer_debit_width
+
 
 @dataclass(frozen=True)
 class OptionLeg:
@@ -268,7 +270,6 @@ def _vertical_candidates(
     """Yield (strategy, legs, debit_or_credit, max_loss, max_profit, expiration)."""
     bullish = str(direction).upper() == "BULLISH"
     debit_right = "C" if bullish else "P"
-    credit_right = "P" if bullish else "C"
     by_right: dict[str, list[dict[str, Any]]] = {"C": [], "P": []}
     for row in valid:
         right = str(row.get("right") or "").upper()
@@ -287,8 +288,12 @@ def _vertical_candidates(
             width = abs(short_strike - long_strike)
             if width <= 0 or width > max_width:
                 continue
+            if not prefer_debit_width(width):
+                continue
             debit = (_float(long.get("ask")) or 0.0) - (_float(short.get("bid")) or 0.0)
             if debit <= 0 or debit >= width:
+                continue
+            if not debit_premium_ok(debit, width):
                 continue
             max_loss = debit * 100.0
             if max_loss > maximum_risk_dollars + 1e-9:
@@ -303,39 +308,9 @@ def _vertical_candidates(
                 expiration,
             )
 
-    for short in by_right[credit_right]:
-        short_delta = _float(short.get("delta"))
-        # Sell premium out of the money: the short strike must not be the
-        # deep-in-the-money side of the market.
-        if short_delta is not None and abs(short_delta) > 0.45:
-            continue
-        for long in by_right[credit_right]:
-            long_strike, short_strike = _float(long.get("strike")), _float(short.get("strike"))
-            if long_strike is None or short_strike is None:
-                continue
-            # Protection sits farther out than the short strike.
-            if bullish and long_strike >= short_strike:
-                continue
-            if not bullish and long_strike <= short_strike:
-                continue
-            width = abs(short_strike - long_strike)
-            if width <= 0 or width > max_width:
-                continue
-            credit = (_float(short.get("bid")) or 0.0) - (_float(long.get("ask")) or 0.0)
-            if credit <= 0 or credit >= width:
-                continue
-            max_loss = (width - credit) * 100.0
-            if max_loss <= 0 or max_loss > maximum_risk_dollars + 1e-9:
-                continue
-            expiration = str(short.get("expiration") or long.get("expiration") or "")
-            yield (
-                "PUT_CREDIT_SPREAD" if bullish else "CALL_CREDIT_SPREAD",
-                [(short, -1), (long, 1)],
-                credit,
-                max_loss,
-                credit * 100.0,
-                expiration,
-            )
+    # Directional credit verticals are not offered. Overnight call credits
+    # were the Aug 18–19 bleed; the winning tape was debit verticals and
+    # iron condors only.
 
 
 def _condor_candidates(
@@ -343,6 +318,7 @@ def _condor_candidates(
     *,
     max_width: float,
     maximum_risk_dollars: float,
+    spy_price: float | None = None,
 ) -> Iterator[tuple[str, list[tuple[dict[str, Any], int]], float, float, float, str]]:
     calls = [row for row in valid if str(row.get("right") or "").upper() == "C"]
     puts = [row for row in valid if str(row.get("right") or "").upper() == "P"]
@@ -377,6 +353,14 @@ def _condor_candidates(
                     call_width = lc_strike - sc_strike
                     if call_width > max_width:
                         continue
+                    if not condor_geometry_ok(
+                        put_width=put_width,
+                        call_width=call_width,
+                        short_put=sp_strike,
+                        short_call=sc_strike,
+                        spot=spy_price,
+                    ):
+                        continue
                     credit = (
                         (_float(short_put.get("bid")) or 0.0)
                         - (_float(long_put.get("ask")) or 0.0)
@@ -408,18 +392,15 @@ def plan_best_strategy(
     spy_price: float | None = None,
     expected_move_dollars: float = 0.0,
     minutes_to_expiry: float = TRADING_MINUTES_PER_DAY,
-    max_width: float = 5.0,
+    max_width: float = 3.5,
     min_open_interest: int = 50,
     max_relative_spread: float = 0.20,
 ) -> OptionPlan | None:
-    """Pick the best defined-risk structure for the signal, long or short premium.
+    """Pick the best defined-risk 0DTE structure for the signal.
 
-    BULLISH considers call debit spreads and put credit spreads; BEARISH the
-    mirror pair; NEUTRAL considers iron condors. Every candidate is scored by
-    the same greeks-based expected value per dollar of risk, so premium selling
-    wins exactly when theta plus win-rate beats the directional capture of the
-    debit alternative. ``expected_move_dollars`` is signed toward the forecast.
-    A plan is only returned when its expected value is positive after friction.
+    BULLISH/BEARISH consider only debit verticals (the winning tape). NEUTRAL
+    considers iron condors. Widths of $2–$3 are preferred. A plan is only
+    returned when expected value is positive after friction.
     """
     rows = list(options)
     valid = [row for row in rows if _liquid(row, min_open_interest, max_relative_spread)]
@@ -444,7 +425,12 @@ def plan_best_strategy(
         return None
 
     candidates = (
-        _condor_candidates(valid, max_width=max_width, maximum_risk_dollars=maximum_risk_dollars)
+        _condor_candidates(
+            valid,
+            max_width=max_width,
+            maximum_risk_dollars=maximum_risk_dollars,
+            spy_price=spy_price,
+        )
         if neutral
         else _vertical_candidates(
             valid, direction, max_width=max_width, maximum_risk_dollars=maximum_risk_dollars
@@ -466,15 +452,17 @@ def plan_best_strategy(
             )
         if expected_value is None or expected_value <= 0:
             continue
+        strikes_by_right: dict[str, list[float]] = {}
+        for row, _ in legs:
+            strikes_by_right.setdefault(str(row.get("right") or "").upper(), []).append(
+                float(row["strike"])
+            )
+        width = max(max(vals) - min(vals) for vals in strikes_by_right.values())
         score = expected_value / max(max_loss, 1e-9)
+        if prefer_debit_width(width):
+            score *= 1.15
         if best is None or score > best_score:
             contracts = max(int(maximum_risk_dollars // max_loss), 1)
-            strikes_by_right: dict[str, list[float]] = {}
-            for row, _ in legs:
-                strikes_by_right.setdefault(str(row.get("right") or "").upper(), []).append(
-                    float(row["strike"])
-                )
-            width = max(max(vals) - min(vals) for vals in strikes_by_right.values())
             best_score = score
             best = OptionPlan(
                 strategy=strategy,
