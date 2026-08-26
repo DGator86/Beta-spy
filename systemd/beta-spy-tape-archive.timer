@@ -1,0 +1,11 @@
+[Unit]
+Description=Archive the day's RTH tape to Google Drive at 4:30 PM Eastern
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 16:30:00 America/New_York
+Persistent=true
+AccuracySec=1m
+Unit=beta-spy-tape-archive.service
+
+[Install]
+WantedBy=timers.target

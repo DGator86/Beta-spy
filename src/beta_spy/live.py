@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 from typing import Any
 
 import httpx
-from websockets.exceptions import ConnectionClosed
+from websockets.exceptions import ConnectionClosed, InvalidHandshake
 from websockets.sync.client import connect
 
 from .engine import Tape500Engine
@@ -21,6 +21,19 @@ from .session_policy import is_rth_entry
 
 TRADIER_API = "https://api.tradier.com/v1"
 TRADIER_WS = "wss://ws.tradier.com/v1/markets/events"
+
+# Handshake 502s (InvalidStatus) are not ConnectionClosed. If they are not
+# retried, the Tradier thread dies and the HTTP app keeps serving a stale
+# DEGRADED snapshot through the whole next session.
+TAPE_RETRY_ERRORS = (
+    ConnectionClosed,
+    InvalidHandshake,
+    OSError,
+    RuntimeError,
+    ValueError,
+    TimeoutError,
+    httpx.HTTPError,
+)
 
 
 class StateHub:
@@ -159,13 +172,18 @@ class TradierMarketStream:
                             # earlier than a once-a-minute mark would allow.
                             self._mark_ledger(datetime.now(UTC))
                             next_mark = now + self.mark_seconds
-            except (ConnectionClosed, OSError, RuntimeError, ValueError, httpx.HTTPError) as exc:
-                self._reconnects += 1
-                self.hub.update(status="DEGRADED")
-                self.hub.patch_stream(reconnects=self._reconnects, last_error=str(exc))
-                self._stop.wait(delay)
-                delay = min(30.0, delay * 2.0)
+            except TAPE_RETRY_ERRORS as exc:
+                delay = self._drop_and_backoff(exc, delay)
+            except Exception as exc:  # noqa: BLE001 — unknown protocol errors still retry
+                delay = self._drop_and_backoff(exc, delay)
         self.hub.update(status="STOPPED")
+
+    def _drop_and_backoff(self, exc: BaseException, delay: float) -> float:
+        self._reconnects += 1
+        self.hub.update(status="DEGRADED")
+        self.hub.patch_stream(reconnects=self._reconnects, last_error=str(exc))
+        self._stop.wait(delay)
+        return min(30.0, delay * 2.0)
 
     def _create_session(self) -> str:
         response = self._http.post("/markets/events/session")
