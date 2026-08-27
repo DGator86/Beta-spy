@@ -25,6 +25,7 @@ dev = ["pytest>=8,<10", "ruff>=0.8,<1"]
 
 [project.scripts]
 beta-spy = "beta_spy.cli:main"
+beta-spy-v2 = "beta_spy.v2_runtime:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
