@@ -1,0 +1,13 @@
+[Unit]
+Description=Archive the RTH tape to Google Drive
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+EnvironmentFile=-/etc/alpha-spy/backup.env
+Environment=TZ=America/New_York
+ExecStart=/usr/bin/python3 /opt/beta-spy/scripts/archive_session_tape.py
+Nice=15
+TimeoutStartSec=2h

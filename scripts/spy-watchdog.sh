@@ -101,6 +101,9 @@ if [[ -d "$PKG" ]] && ! grep -q plan_best_strategy "$PKG/options.py" 2>/dev/null
 fi
 
 # 4. Tape freshness during the US session (Mon-Fri 13:35-20:00 UTC).
+# A 502 handshake used to kill the Tradier thread while systemd still
+# reported beta-spy as active. Restart when the tape is stale so the next
+# session is not spent serving yesterday's DEGRADED snapshot.
 if (( dow <= 5 )) && [[ "$hm" > "1335" && "$hm" < "2000" ]]; then
   last="$(sqlite3 "file:/var/lib/beta-spy/beta-spy.sqlite?mode=ro" \
     "SELECT CAST(strftime('%s','now') - strftime('%s', MAX(timestamp)) AS INTEGER) FROM minute_bars" \
@@ -109,6 +112,18 @@ if (( dow <= 5 )) && [[ "$hm" > "1335" && "$hm" < "2000" ]]; then
     note "beta-spy tape freshness unknown (freshness query failed)"
   elif (( last > 300 )); then
     note "beta-spy tape is stale: last minute bar is ${last}s old during market hours"
+    LAST_RESTART="$(cat "$STATE_DIR/last-beta-tape-restart" 2>/dev/null || echo 0)"
+    NOW_TS="$(date +%s)"
+    if (( NOW_TS - LAST_RESTART > 600 )); then
+      if systemctl restart beta-spy >/dev/null 2>&1; then
+        echo "$NOW_TS" >"$STATE_DIR/last-beta-tape-restart"
+        note "beta-spy restarted because the Tradier tape was stale"
+      else
+        note "beta-spy restart FAILED while the tape was stale"
+      fi
+    else
+      note "beta-spy restart skipped; last tape restart was $((NOW_TS - LAST_RESTART))s ago"
+    fi
   fi
 fi
 

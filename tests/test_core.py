@@ -207,6 +207,7 @@ def _chain_with_greeks():
         (98, .72, .030, -.18, 2.10, 2.14), (99, .63, .040, -.22, 1.30, 1.34),
         (100, .51, .045, -.25, .70, .74), (101, .38, .042, -.23, .48, .52),
         (102, .26, .035, -.20, .32, .36), (103, .16, .026, -.15, .14, .18),
+        (104, .10, .018, -.11, .07, .10),
     ]:
         rows.append({"symbol": f"C{strike}", "expiration": "2026-08-14", "right": "C",
                      "strike": strike, "bid": cb, "ask": ca, "delta": cd, "gamma": cg,
@@ -215,6 +216,7 @@ def _chain_with_greeks():
         (102, -.74, .030, -.18, 2.00, 2.04), (101, -.62, .040, -.22, 1.25, 1.29),
         (100, -.49, .045, -.25, .68, .72), (99, -.37, .042, -.23, .46, .50),
         (98, -.25, .035, -.20, .30, .34), (97, -.15, .026, -.15, .13, .17),
+        (96, -.09, .018, -.11, .06, .09),
     ]:
         rows.append({"symbol": f"P{strike}", "expiration": "2026-08-14", "right": "P",
                      "strike": strike, "bid": pb, "ask": pa, "delta": pd_, "gamma": pg,
@@ -222,7 +224,7 @@ def _chain_with_greeks():
     return rows
 
 
-def test_planner_offers_credit_spreads_for_directional_signals():
+def test_planner_uses_debit_spreads_for_directional_signals():
     from beta_spy.options import plan_best_strategy
 
     plan = plan_best_strategy(
@@ -235,12 +237,11 @@ def test_planner_offers_credit_spreads_for_directional_signals():
         minutes_to_expiry=390,
     )
     assert plan is not None
-    assert plan.strategy in {"CALL_DEBIT_SPREAD", "PUT_CREDIT_SPREAD"}
+    assert plan.strategy == "CALL_DEBIT_SPREAD"
     assert plan.expected_value_dollars is not None and plan.expected_value_dollars > 0
     assert plan.total_risk_dollars <= 300 + 1e-6
     sides = {(leg.side, leg.right) for leg in plan.legs}
-    if plan.strategy == "PUT_CREDIT_SPREAD":
-        assert ("SELL", "P") in sides and ("BUY", "P") in sides
+    assert ("BUY", "C") in sides and ("SELL", "C") in sides
 
 
 def test_planner_sells_iron_condor_on_neutral_quiet_signal():
@@ -347,10 +348,15 @@ def test_neutral_trade_requires_quiet_tape_not_just_model_neutrality():
         decision = engine.decide(ts + timedelta(minutes=minute), factors_at(minute, 0.0015), neutral_forecasts)
     assert decision.action == "NO_TRADE"
 
-    # Quiet tape: tiny 1m returns for a full window -> condor signal fires.
+    # Quiet tape after 45 minutes with a sub-$3 range -> condor signal fires.
     engine = DecisionEngine()
     for minute in range(20):
-        decision = engine.decide(ts + timedelta(minutes=minute), factors_at(minute, 0.00005), neutral_forecasts)
+        decision = engine.decide(
+            ts + timedelta(minutes=minute),
+            factors_at(minute, 0.00005),
+            neutral_forecasts,
+            spy_price=100.0,
+        )
     assert decision.action == "TRADE_NEUTRAL"
     assert decision.structure == "IRON_CONDOR"
     assert decision.risk_multiplier == 0.5

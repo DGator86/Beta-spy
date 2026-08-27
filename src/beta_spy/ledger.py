@@ -13,12 +13,12 @@ half-spread per leg, which at this scale is comparable to the entire
 per-trade edge.
 
 Exits are managed:
-- Credit structures (credit spreads, iron condors) take profit when half of
-  the collected premium has decayed, stop out when the loss reaches twice the
-  credit, and are force-closed shortly before expiry.
-- Debit spreads take profit at +50% of the debit, stop out at -50%, and are
-  otherwise closed at their forecast horizon (the EV model prices the plan
-  over that hold, so letting it run past the horizon is unmodelled risk).
+- Credit structures take profit at half the credit, stop at 2x credit, and
+  flatten at 15:50 ET (close probe) rather than riding into 0DTE settlement.
+- Debit verticals stop at half the debit, take profit near 78% of max
+  profit, trail giveback after a 35% run-up, and never die on a 15-minute
+  clock. Everything is flat by 15:55 ET.
+- New entries are refused outside 09:40–15:40 ET. One working position.
 
 Sizing feedback (equity-proportional, so the account can compound):
 - ``risk_budget_dollars`` is a fixed fraction of *current* equity. Winners
@@ -42,6 +42,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Iterable, Mapping
 
 from .options import OptionPlan
+from .session_policy import (
+    is_rth_entry,
+    should_abort_condor,
+    should_abort_debit,
+    should_flatten_condor,
+    should_force_flat,
+)
 from .storage import Tape500Store
 
 CREDIT_STRATEGIES = {"PUT_CREDIT_SPREAD", "CALL_CREDIT_SPREAD", "IRON_CONDOR"}
@@ -78,6 +85,8 @@ LEDGER_MIGRATIONS = (
     "ALTER TABLE paper_positions ADD COLUMN limit_cash REAL",
     "ALTER TABLE paper_positions ADD COLUMN width REAL",
     "ALTER TABLE paper_positions ADD COLUMN entry_style TEXT",
+    "ALTER TABLE paper_positions ADD COLUMN peak_pnl REAL",
+    "ALTER TABLE paper_positions ADD COLUMN entry_spot REAL",
 )
 
 
@@ -98,7 +107,7 @@ class PaperLedger:
         *,
         daily_loss_limit_dollars: float | None = None,
         daily_loss_fraction: float = 0.25,
-        max_open_positions: int = 3,
+        max_open_positions: int = 1,
         credit_take_profit_fraction: float = 0.5,
         credit_stop_loss_multiple: float = 2.0,
         debit_take_profit_fraction: float = 0.5,
@@ -137,13 +146,21 @@ class PaperLedger:
 
     # -- opening ---------------------------------------------------------
 
-    def open_position(self, plan: OptionPlan, timestamp: datetime) -> int | None:
+    def open_position(
+        self,
+        plan: OptionPlan,
+        timestamp: datetime,
+        *,
+        spy_price: float | None = None,
+    ) -> int | None:
         """Rest the plan as a PENDING mid-price entry; returns the row id.
 
         Refuses when the strategy is already working or open (the planner
         re-emits the same idea while a signal persists), when the book is
         full, or when the daily circuit breaker has tripped.
         """
+        if not is_rth_entry(timestamp):
+            return None
         if self.breaker_tripped(timestamp):
             return None
         working = self._rows(("OPEN", "PENDING"))
@@ -175,8 +192,8 @@ class PaperLedger:
                 INSERT INTO paper_positions(
                     opened_at,strategy,direction,expiration,contracts,entry_price,is_credit,
                     max_loss_dollars,max_profit_dollars,hold_minutes,legs,status,
-                    limit_cash,width,entry_style
-                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?)
+                    limit_cash,width,entry_style,entry_spot
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,'PENDING',?,?,?,?)
                 """,
                 (
                     _iso(timestamp),
@@ -193,10 +210,70 @@ class PaperLedger:
                     round(limit_cash, 4),
                     plan.width,
                     "MID_LIMIT",
+                    float(spy_price) if spy_price else None,
                 ),
             )
             self.store.connection.commit()
         return int(cursor.lastrowid or 0)
+
+    def flatten_for_reverse(
+        self,
+        plan: OptionPlan,
+        now: datetime,
+        quotes: Mapping[str, tuple[float, float]],
+    ) -> list[dict[str, Any]]:
+        """Close a blocking credit so a directional debit can fire this cycle."""
+        if plan.strategy in CREDIT_STRATEGIES:
+            return []
+        closed: list[dict[str, Any]] = []
+        for row in self._rows(("OPEN", "PENDING")):
+            if row["strategy"] not in CREDIT_STRATEGIES:
+                continue
+            if row["status"] == "PENDING":
+                with self.store.lock:
+                    self.store.connection.execute(
+                        "UPDATE paper_positions SET status='CANCELLED', closed_at=?, exit_reason='FLATTEN_AND_REVERSE' WHERE id=?",
+                        (_iso(now), row["id"]),
+                    )
+                    self.store.connection.commit()
+                closed.append({"id": row["id"], "exit_reason": "FLATTEN_AND_REVERSE"})
+                continue
+            legs = json.loads(row["legs"])
+            liquidation = self._liquidation_value(legs, quotes)
+            if liquidation is None:
+                continue
+            entry = float(row["entry_price"])
+            contracts = int(row["contracts"])
+            is_credit = bool(row["is_credit"])
+            entry_cashflow = entry if is_credit else -entry
+            pnl = round((entry_cashflow + liquidation) * 100.0 * contracts, 2)
+            with self.store.lock:
+                self.store.connection.execute(
+                    """
+                    UPDATE paper_positions
+                    SET status='CLOSED', closed_at=?, exit_reason=?, exit_value=?,
+                        realized_pnl_dollars=?, mark_value=?, unrealized_pnl_dollars=0, marked_at=?
+                    WHERE id=?
+                    """,
+                    (
+                        _iso(now),
+                        "FLATTEN_AND_REVERSE",
+                        round(liquidation, 4),
+                        round(pnl, 2),
+                        round(liquidation, 4),
+                        _iso(now),
+                        row["id"],
+                    ),
+                )
+                self.store.connection.commit()
+            closed.append(
+                {
+                    "id": row["id"],
+                    "exit_reason": "FLATTEN_AND_REVERSE",
+                    "realized_pnl_dollars": round(pnl, 2),
+                }
+            )
+        return closed
 
     # -- marking, fills, and exits ----------------------------------------
 
@@ -212,6 +289,9 @@ class PaperLedger:
         self,
         quotes: Mapping[str, tuple[float, float]],
         now: datetime,
+        *,
+        spy_price: float | None = None,
+        tradeable_impulse: bool = False,
     ) -> list[dict[str, Any]]:
         """Fill pending entries and mark/close open positions.
 
@@ -232,12 +312,28 @@ class PaperLedger:
             entry_cashflow = entry if is_credit else -entry
             # Cents precision: exit thresholds must not miss on float dust.
             pnl = round((entry_cashflow + liquidation) * 100.0 * contracts, 2)
-            reason = self._exit_reason(row, pnl, entry, contracts, is_credit, now)
+            prior_peak = row["peak_pnl"] if "peak_pnl" in row.keys() else None
+            peak = max(float(prior_peak or 0.0), pnl)
+            reason = self._exit_reason(
+                row,
+                pnl,
+                entry,
+                contracts,
+                is_credit,
+                now,
+                peak_pnl=peak,
+                spy_price=spy_price,
+                tradeable_impulse=tradeable_impulse,
+            )
             if reason is None:
                 with self.store.lock:
                     self.store.connection.execute(
-                        "UPDATE paper_positions SET mark_value=?, unrealized_pnl_dollars=?, marked_at=? WHERE id=?",
-                        (round(liquidation, 4), round(pnl, 2), _iso(now), row["id"]),
+                        """
+                        UPDATE paper_positions
+                        SET mark_value=?, unrealized_pnl_dollars=?, peak_pnl=?, marked_at=?
+                        WHERE id=?
+                        """,
+                        (round(liquidation, 4), round(pnl, 2), round(peak, 2), _iso(now), row["id"]),
                     )
                     self.store.connection.commit()
                 continue
@@ -338,33 +434,58 @@ class PaperLedger:
         contracts: int,
         is_credit: bool,
         now: datetime,
+        *,
+        peak_pnl: float = 0.0,
+        spy_price: float | None = None,
+        tradeable_impulse: bool = False,
     ) -> str | None:
         # Cents precision on the thresholds as well as the P&L: 1.1 * 100 is
         # 110.00000000000001 in floats, which would push a threshold a hair
         # past an exactly-at-target P&L.
         premium = round(entry * 100.0 * contracts, 2)
+        max_profit = float(row["max_profit_dollars"] or 0.0)
         if is_credit:
+            entry_spot = None
+            try:
+                entry_spot = float(row["entry_spot"]) if row["entry_spot"] is not None else None
+            except (KeyError, TypeError, ValueError):
+                entry_spot = None
+            if should_abort_condor(
+                entry_spot=entry_spot, spot=spy_price, tradeable=tradeable_impulse
+            ):
+                return "RANGE_IMPULSE_ABORT"
             if pnl >= round(self.credit_take_profit_fraction * premium, 2):
                 return "TAKE_PROFIT"
             if pnl <= -round(self.credit_stop_loss_multiple * premium, 2):
                 return "STOP_LOSS"
+            if should_flatten_condor(now):
+                return "EXPIRY_CLOSE"
         else:
-            if pnl >= round(self.debit_take_profit_fraction * premium, 2):
+            entry_spot = None
+            try:
+                entry_spot = float(row["entry_spot"]) if row["entry_spot"] is not None else None
+            except (KeyError, TypeError, ValueError):
+                entry_spot = None
+            try:
+                direction = str(row["direction"] or "")
+            except (KeyError, IndexError, TypeError):
+                direction = ""
+            if should_abort_debit(
+                direction=direction,
+                entry_spot=entry_spot,
+                spot=spy_price,
+            ):
+                return "IMPULSE_REVERSAL"
+            if max_profit > 0 and pnl >= round(0.78 * max_profit, 2):
                 return "TAKE_PROFIT"
             if pnl <= -round(self.debit_stop_loss_fraction * premium, 2):
                 return "STOP_LOSS"
-        opened_at = _parse(row["opened_at"])
-        if row["strategy"] == "IRON_CONDOR":
-            # Condors are an expiry-EV trade: hold toward expiry, but never
-            # into the settlement print.
-            expiry_close = self._expiration_close(str(row["expiration"]))
-            if expiry_close is not None and now >= expiry_close - timedelta(
-                minutes=self.expiry_buffer_minutes
-            ):
-                return "EXPIRY_CLOSE"
-        elif now >= opened_at + timedelta(minutes=float(row["hold_minutes"])):
-            # Directional structures are priced over the forecast horizon.
-            return "HORIZON"
+            if peak_pnl >= 0.35 * premium and pnl > 0.0:
+                giveback = max(0.12 * premium, 0.32 * peak_pnl)
+                if pnl <= round(peak_pnl - giveback, 2):
+                    return "PROFIT_TRAIL"
+        if should_force_flat(now):
+            return "FORCED_FLAT"
         return None
 
     @staticmethod
@@ -573,7 +694,7 @@ class PaperLedger:
                 f"""
                 SELECT id, opened_at, strategy, direction, expiration, contracts, entry_price,
                        is_credit, max_loss_dollars, max_profit_dollars, hold_minutes, legs,
-                       unrealized_pnl_dollars, status, limit_cash, width, entry_style
+                       unrealized_pnl_dollars, status, limit_cash, width, entry_style, peak_pnl
                 FROM paper_positions WHERE status IN ({placeholders}) ORDER BY id
                 """,
                 statuses,
