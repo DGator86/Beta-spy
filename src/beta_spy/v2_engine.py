@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from typing import Any
@@ -20,7 +21,7 @@ class V2Tape500Engine(Tape500Engine):
     """Tape500 engine with a maturity-delayed supervisory forecast stack.
 
     The legacy forecast/decision path remains in the snapshot for side-by-side
-    diagnosis, but V2 consumers must use ``v2_state``.  Beta V2 does not own
+    diagnosis, but V2 consumers must use ``v2_state``. Beta V2 does not own
     option payoff geometry and therefore never treats ``decision.structure`` as
     authoritative.
     """
@@ -56,8 +57,6 @@ class V2Tape500Engine(Tape500Engine):
                     )
                     """
                 )
-                import json
-
                 self.store.connection.execute(
                     "INSERT OR REPLACE INTO v2_market_state(timestamp,payload) VALUES(?,?)",
                     (
