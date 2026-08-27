@@ -13,6 +13,7 @@ from .live import StateHub
 from .replay import HistoricalReplay
 from .storage import Tape500Store
 from .universe import fetch_current_spy_universe, load_universe_csv
+from .v2_hgb_direction import CausalHGBDirectionStack
 from .v2_live import V2TradierMarketStream
 from .v2_mtf import V2MTFStack
 
@@ -24,7 +25,7 @@ def _holdings(path: str | None):
 def parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="beta-spy-v2",
-        description="Beta-SPY V2 causal MTF opportunity service",
+        description="Beta-SPY V2 causal HGB + MTF intelligence service",
     )
     root.add_argument("--db", default="data/beta-spy.sqlite")
     root.add_argument("--universe")
@@ -55,6 +56,7 @@ def main() -> None:
     hub = StateHub()
     engine = Tape500Engine(holdings, store=store)
     v2_stack = V2MTFStack()
+    direction_stack = CausalHGBDirectionStack()
 
     def warm_start() -> None:
         if args.warm_sessions <= 0:
@@ -79,6 +81,7 @@ def main() -> None:
             if spy is None:
                 continue
             v2_stack.step(snapshot.timestamp, snapshot.factors, float(spy.close))
+            direction_stack.step(snapshot.timestamp, engine.states, float(spy.close))
             count += 1
         hub.update(
             v2_warm_start={
@@ -86,7 +89,9 @@ def main() -> None:
                 "snapshots": count,
                 "started_at": recent[0],
                 "completed_at": datetime.now(UTC).isoformat(),
-                "config_sha256": v2_stack.config.fingerprint(),
+                "mtf_config_sha256": v2_stack.config.fingerprint(),
+                "hgb_training_sessions": len(set(direction_stack.sample_dates)),
+                "hgb_training_samples": len(direction_stack.y_bps),
             }
         )
 
@@ -98,6 +103,7 @@ def main() -> None:
         warmup=warm_start,
         alpha_state_url=args.alpha_state_url,
         v2_stack=v2_stack,
+        direction_stack=direction_stack,
     )
     thread = threading.Thread(target=stream.run_forever, daemon=True, name="beta-v2-tape")
     thread.start()
