@@ -12,12 +12,13 @@ from .v2_regime_forecast import forecast_regime
 
 
 class V2TradierMarketStream(TradierMarketStream):
-    """Beta V2 live stream: publish causal intelligence, never an option strategy.
+    """Beta V2 live stream: independent causal witness, never regime authority.
 
-    HGB owns the validated directional witness. Predictive-state compression owns
-    regime/analog/path-distribution evidence. The explicit regime forecast turns
-    that state into duration and successor probabilities. None of these components
-    may choose an option family or place a trade.
+    HGB owns the constituent/tape directional witness. Predictive-state compression
+    supplies analog/path-distribution evidence. Beta also publishes its own regime
+    duration/transition view for disagreement diagnostics, but Alpha's hierarchical
+    regime plus Alpha lifecycle engine own Steps 1-4 in the master V2 system.
+    Beta cannot choose an option family or place a trade.
     """
 
     def __init__(
@@ -66,6 +67,7 @@ class V2TradierMarketStream(TradierMarketStream):
         payload["hgb_direction"] = direction.as_dict()
         payload["predictive_state"] = state.as_dict()
         payload["regime_forecast"] = regime_forecast.as_dict()
+        payload["regime_forecast_role"] = "independent_constituent_regime_witness"
         payload["regime_definable"] = regime_forecast.definable
         payload["regime_confidence"] = regime_forecast.confidence
         payload["regime_persistence_15"] = regime_forecast.persistence_15
@@ -75,7 +77,8 @@ class V2TradierMarketStream(TradierMarketStream):
         payload["most_likely_successor_regime"] = regime_forecast.most_likely_successor
         payload["successor_regime_confidence"] = regime_forecast.successor_confidence
         payload["strategy_authority"] = False
-        payload["role"] = "regime_duration_transition_and_distribution_intelligence"
+        payload["regime_authority"] = False
+        payload["role"] = "independent_constituent_tape_and_distribution_witness"
 
         payload["eligible"] = bool(direction.eligible)
         payload["state"] = (
@@ -105,9 +108,9 @@ class V2TradierMarketStream(TradierMarketStream):
         payload["reasons"] = [
             "hgb_daily_refit_direction_signal"
             if direction.eligible
-            else "regime_defined_waiting_for_monetizable_edge"
+            else "beta_regime_witness_defined_without_directional_trade"
             if regime_forecast.definable
-            else "state_distribution_ready_regime_uncertain"
+            else "state_distribution_ready_beta_regime_witness_uncertain"
             if state.ready
             else "v2_models_warming"
         ]
