@@ -78,26 +78,38 @@ class V2HorizonModel:
     scaler: StandardScaler = field(default_factory=StandardScaler)
     magnitude_classifier: SGDClassifier = field(
         default_factory=lambda: SGDClassifier(
-            loss="log_loss", penalty="l2", alpha=0.0007,
-            learning_rate="optimal", random_state=41,
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="optimal",
+            random_state=41,
         )
     )
     direction_classifier: SGDClassifier = field(
         default_factory=lambda: SGDClassifier(
-            loss="log_loss", penalty="l2", alpha=0.0007,
-            learning_rate="optimal", random_state=43,
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="optimal",
+            random_state=43,
         )
     )
     abs_regressor: SGDRegressor = field(
         default_factory=lambda: SGDRegressor(
-            penalty="l2", alpha=0.0007, learning_rate="invscaling",
-            eta0=0.004, random_state=47,
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="invscaling",
+            eta0=0.004,
+            random_state=47,
         )
     )
     signed_regressor: SGDRegressor = field(
         default_factory=lambda: SGDRegressor(
-            penalty="l2", alpha=0.0007, learning_rate="invscaling",
-            eta0=0.004, random_state=53,
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="invscaling",
+            eta0=0.004,
+            random_state=53,
         )
     )
     pending: deque[_Pending] = field(default_factory=deque)
@@ -109,27 +121,37 @@ class V2HorizonModel:
 
     @property
     def big_move_threshold_bps(self) -> float:
-        # 7.5 bps at the 15m authoritative horizon; sqrt-time scaling keeps
-        # 5m and 30m economically comparable without pretending returns scale linearly.
         return 7.5 * math.sqrt(max(self.horizon_minutes, 1) / 15.0)
 
     def _reset_models(self) -> None:
         self.scaler = StandardScaler()
         self.magnitude_classifier = SGDClassifier(
-            loss="log_loss", penalty="l2", alpha=0.0007,
-            learning_rate="optimal", random_state=41,
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="optimal",
+            random_state=41,
         )
         self.direction_classifier = SGDClassifier(
-            loss="log_loss", penalty="l2", alpha=0.0007,
-            learning_rate="optimal", random_state=43,
+            loss="log_loss",
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="optimal",
+            random_state=43,
         )
         self.abs_regressor = SGDRegressor(
-            penalty="l2", alpha=0.0007, learning_rate="invscaling",
-            eta0=0.004, random_state=47,
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="invscaling",
+            eta0=0.004,
+            random_state=47,
         )
         self.signed_regressor = SGDRegressor(
-            penalty="l2", alpha=0.0007, learning_rate="invscaling",
-            eta0=0.004, random_state=53,
+            penalty="l2",
+            alpha=0.0007,
+            learning_rate="invscaling",
+            eta0=0.004,
+            random_state=53,
         )
         self.pending.clear()
         self.validations.clear()
@@ -143,34 +165,66 @@ class V2HorizonModel:
         if expected is not None and int(expected) != int(n_features):
             self._reset_models()
 
+    def _magnitude_base_rate(self) -> float:
+        """Causal Beta-prior base rate that cannot collapse at 0% or 100%."""
+        if not self.validations:
+            return 0.5
+        big = sum(1 for row in self.validations if row.realized_big)
+        return float((big + 10.0) / (len(self.validations) + 20.0))
+
     def _validation_metrics(self) -> tuple[float, float, float]:
         if not self.validations:
             return 0.0, 0.0, 0.0
         rows = list(self.validations)
-        # Magnitude trust is Brier skill against the causal empirical base rate.
-        outcomes = np.asarray([1.0 if r.realized_big else 0.0 for r in rows], dtype=float)
-        probs = np.asarray([r.raw_big_probability for r in rows], dtype=float)
-        base = float(np.mean(outcomes))
-        brier = float(np.mean((probs - outcomes) ** 2))
-        baseline = max(base * (1.0 - base), 1e-6)
-        brier_skill = 1.0 - brier / baseline
+        outcomes = np.asarray(
+            [1.0 if row.realized_big else 0.0 for row in rows],
+            dtype=float,
+        )
+        probabilities = np.asarray(
+            [row.raw_big_probability for row in rows],
+            dtype=float,
+        )
+        base = self._magnitude_base_rate()
+        model_brier = float(np.mean((probabilities - outcomes) ** 2))
+        baseline_brier = max(float(np.mean((base - outcomes) ** 2)), 1e-6)
+        brier_skill = 1.0 - model_brier / baseline_brier
         evidence = min(len(rows) / 100.0, 1.0)
-        magnitude_trust = float(np.clip(max(brier_skill, 0.0) * evidence, 0.0, 1.0))
+        magnitude_trust = float(
+            np.clip(max(brier_skill, 0.0) * evidence, 0.0, 1.0)
+        )
 
-        directional = [r for r in rows if r.realized_big and r.realized_up is not None]
+        directional = [
+            row
+            for row in rows
+            if row.realized_big and row.realized_up is not None
+        ]
         if not directional:
             return magnitude_trust, 0.0, 0.0
-        correct = sum((r.raw_up_probability >= 0.5) == bool(r.realized_up) for r in directional)
-        # Beta(10,10) shrinkage prevents a tiny run from creating false certainty.
+        correct = sum(
+            (row.raw_up_probability >= 0.5) == bool(row.realized_up)
+            for row in directional
+        )
         shrunk_accuracy = (correct + 10.0) / (len(directional) + 20.0)
-        signed_alignment = float(np.clip(2.0 * shrunk_accuracy - 1.0, -1.0, 1.0))
-        direction_trust = float(np.clip(abs(signed_alignment) * min(len(directional) / 60.0, 1.0), 0.0, 1.0))
+        signed_alignment = float(
+            np.clip(2.0 * shrunk_accuracy - 1.0, -1.0, 1.0)
+        )
+        direction_trust = float(
+            np.clip(
+                abs(signed_alignment) * min(len(directional) / 60.0, 1.0),
+                0.0,
+                1.0,
+            )
+        )
         return magnitude_trust, direction_trust, signed_alignment
 
     def mature(self, timestamp: datetime, spy_price: float) -> None:
         while self.pending and self.pending[0].target_time <= timestamp:
             item = self.pending.popleft()
-            if item.target_time.date() != timestamp.date() or item.start_price <= 0 or spy_price <= 0:
+            if (
+                item.target_time.date() != timestamp.date()
+                or item.start_price <= 0
+                or spy_price <= 0
+            ):
                 continue
             target_bps = (spy_price / item.start_price - 1.0) * 10_000.0
             realized_big = abs(target_bps) >= self.big_move_threshold_bps
@@ -179,16 +233,30 @@ class V2HorizonModel:
             z = self.scaler.transform(x)
             y_big = np.asarray([1 if realized_big else 0], dtype=int)
             if not self._magnitude_initialized:
-                self.magnitude_classifier.partial_fit(z, y_big, classes=np.asarray([0, 1], dtype=int))
+                self.magnitude_classifier.partial_fit(
+                    z,
+                    y_big,
+                    classes=np.asarray([0, 1], dtype=int),
+                )
                 self._magnitude_initialized = True
             else:
                 self.magnitude_classifier.partial_fit(z, y_big)
-            self.abs_regressor.partial_fit(z, np.asarray([abs(target_bps)], dtype=float))
-            self.signed_regressor.partial_fit(z, np.asarray([target_bps], dtype=float))
+            self.abs_regressor.partial_fit(
+                z,
+                np.asarray([abs(target_bps)], dtype=float),
+            )
+            self.signed_regressor.partial_fit(
+                z,
+                np.asarray([target_bps], dtype=float),
+            )
             if realized_big:
                 y_dir = np.asarray([1 if target_bps > 0 else 0], dtype=int)
                 if not self._direction_initialized:
-                    self.direction_classifier.partial_fit(z, y_dir, classes=np.asarray([0, 1], dtype=int))
+                    self.direction_classifier.partial_fit(
+                        z,
+                        y_dir,
+                        classes=np.asarray([0, 1], dtype=int),
+                    )
                     self._direction_initialized = True
                 else:
                     self.direction_classifier.partial_fit(z, y_dir)
@@ -207,19 +275,23 @@ class V2HorizonModel:
                     self.validations.popleft()
             self.sample_count += 1
 
-    def raw_predict(self, vector: np.ndarray) -> tuple[float, float, float, float, bool]:
+    def raw_predict(
+        self,
+        vector: np.ndarray,
+    ) -> tuple[float, float, float, float, bool]:
         ready = self.sample_count >= self.min_samples and self._magnitude_initialized
         if not ready:
             return 0.5, 0.5, self.big_move_threshold_bps, 0.0, False
         z = self.scaler.transform(vector.reshape(1, -1))
-        p_big = float(self.magnitude_classifier.predict_proba(z)[0, 1])
-        p_up = (
+        probability_big = float(self.magnitude_classifier.predict_proba(z)[0, 1])
+        probability_up = (
             float(self.direction_classifier.predict_proba(z)[0, 1])
-            if self._direction_initialized else 0.5
+            if self._direction_initialized
+            else 0.5
         )
         expected_abs = max(0.0, float(self.abs_regressor.predict(z)[0]))
         expected_signed = float(self.signed_regressor.predict(z)[0])
-        return p_big, p_up, expected_abs, expected_signed, True
+        return probability_big, probability_up, expected_abs, expected_signed, True
 
     def queue(
         self,
@@ -228,14 +300,14 @@ class V2HorizonModel:
         spy_price: float,
         raw: tuple[float, float, float, float, bool],
     ) -> None:
-        p_big, p_up, expected_abs, expected_signed, ready = raw
+        probability_big, probability_up, expected_abs, expected_signed, ready = raw
         self.pending.append(
             _Pending(
                 target_time=timestamp + timedelta(minutes=self.horizon_minutes),
                 vector=vector.copy(),
                 start_price=spy_price,
-                raw_big_probability=p_big,
-                raw_up_probability=p_up,
+                raw_big_probability=probability_big,
+                raw_up_probability=probability_up,
                 expected_abs_bps=expected_abs,
                 expected_signed_bps=expected_signed,
                 model_ready=ready,
@@ -244,20 +316,16 @@ class V2HorizonModel:
         while len(self.pending) > self.max_pending:
             self.pending.popleft()
 
-    def state(self, raw: tuple[float, float, float, float, bool]) -> V2HorizonState:
-        p_big, p_up, expected_abs, expected_signed, ready = raw
-        mag_trust, dir_trust, alignment = self._validation_metrics()
-        # Shrink magnitude probability toward the observed causal base rate when trust is weak.
-        if self.validations:
-            base_rate = float(np.mean([1.0 if r.realized_big else 0.0 for r in self.validations]))
-        else:
-            base_rate = 0.5
-        compressed_big = base_rate + mag_trust * (p_big - base_rate)
-
-        # Signed alignment is allowed to be negative. If the direction head has
-        # systematically pointed the wrong way, the edge is inverted causally.
-        raw_edge = (p_up - 0.5) * 2.0
-        compressed_edge = raw_edge * alignment * dir_trust
+    def state(
+        self,
+        raw: tuple[float, float, float, float, bool],
+    ) -> V2HorizonState:
+        probability_big, probability_up, expected_abs, expected_signed, ready = raw
+        magnitude_trust, direction_trust, alignment = self._validation_metrics()
+        base_rate = self._magnitude_base_rate()
+        compressed_big = base_rate + magnitude_trust * (probability_big - base_rate)
+        raw_edge = (probability_up - 0.5) * 2.0
+        compressed_edge = raw_edge * alignment * direction_trust
         compressed_up = 0.5 + 0.5 * compressed_edge
         return V2HorizonState(
             horizon_minutes=self.horizon_minutes,
@@ -266,8 +334,8 @@ class V2HorizonModel:
             probability_up_given_big_move=float(np.clip(compressed_up, 0.01, 0.99)),
             expected_abs_move_bps=expected_abs,
             expected_signed_move_bps=expected_signed,
-            magnitude_trust=mag_trust,
-            direction_trust=dir_trust,
+            magnitude_trust=magnitude_trust,
+            direction_trust=direction_trust,
             signed_alignment=alignment,
             matured_samples=self.sample_count,
             matured_big_moves=self.big_move_count,
@@ -276,66 +344,98 @@ class V2HorizonModel:
 
 
 class V2ValidationStack:
-    """Maturity-delayed 5/15/30m market-state model.
+    """Maturity-delayed 5/15/30m market-state model."""
 
-    Nothing at timestamp t is validated using an outcome that matures after t.
-    The output is intentionally strategy-agnostic: Alpha owns payoff geometry.
-    """
-
-    def __init__(self, horizons: tuple[int, ...] = (5, 15, 30), min_samples: int = 200):
+    def __init__(
+        self,
+        horizons: tuple[int, ...] = (5, 15, 30),
+        min_samples: int = 200,
+    ) -> None:
         self.models = {
-            horizon: V2HorizonModel(horizon_minutes=horizon, min_samples=min_samples)
+            horizon: V2HorizonModel(
+                horizon_minutes=horizon,
+                min_samples=min_samples,
+            )
             for horizon in horizons
         }
 
-    def step(self, timestamp: datetime, factors: MarketFactors, spy_price: float) -> V2MarketState:
+    def step(
+        self,
+        timestamp: datetime,
+        factors: MarketFactors,
+        spy_price: float,
+    ) -> V2MarketState:
         x = vectorize(factors, feature_set="full_v1")
-        raws: dict[int, tuple[float, float, float, float, bool]] = {}
+        raw_predictions: dict[int, tuple[float, float, float, float, bool]] = {}
         for model in self.models.values():
             model.align_features(x.size)
             model.mature(timestamp, spy_price)
-            raws[model.horizon_minutes] = model.raw_predict(x)
-        states = tuple(self.models[h].state(raws[h]) for h in sorted(self.models))
+            raw_predictions[model.horizon_minutes] = model.raw_predict(x)
+        states = tuple(
+            self.models[horizon].state(raw_predictions[horizon])
+            for horizon in sorted(self.models)
+        )
         for model in self.models.values():
-            model.queue(timestamp, x, spy_price, raws[model.horizon_minutes])
+            model.queue(
+                timestamp,
+                x,
+                spy_price,
+                raw_predictions[model.horizon_minutes],
+            )
 
-        by_h = {state.horizon_minutes: state for state in states}
         role_weights = {5: 0.20, 15: 0.55, 30: 0.25}
-        mag_numerator = 0.0
-        mag_denominator = 0.0
-        dir_numerator = 0.0
-        dir_denominator = 0.0
-        abs_numerator = 0.0
-        abs_denominator = 0.0
-        for horizon, state in by_h.items():
-            role = role_weights.get(horizon, 0.10)
-            mag_weight = role * max(state.magnitude_trust, 0.05)
-            dir_weight = role * state.direction_trust
-            mag_numerator += mag_weight * state.probability_big_move
-            mag_denominator += mag_weight
-            edge = (state.probability_up_given_big_move - 0.5) * 2.0
-            dir_numerator += dir_weight * edge
-            dir_denominator += dir_weight
-            abs_numerator += mag_weight * state.expected_abs_move_bps
-            abs_denominator += mag_weight
+        magnitude_numerator = 0.0
+        magnitude_denominator = 0.0
+        direction_numerator = 0.0
+        direction_denominator = 0.0
+        absolute_numerator = 0.0
+        absolute_denominator = 0.0
+        for state in states:
+            role = role_weights.get(state.horizon_minutes, 0.10)
+            magnitude_weight = role * max(state.magnitude_trust, 0.05)
+            direction_weight = role * state.direction_trust
+            magnitude_numerator += magnitude_weight * state.probability_big_move
+            magnitude_denominator += magnitude_weight
+            direction_edge = (state.probability_up_given_big_move - 0.5) * 2.0
+            direction_numerator += direction_weight * direction_edge
+            direction_denominator += direction_weight
+            absolute_numerator += magnitude_weight * state.expected_abs_move_bps
+            absolute_denominator += magnitude_weight
 
-        probability_big = mag_numerator / mag_denominator if mag_denominator else 0.5
-        direction_edge = dir_numerator / dir_denominator if dir_denominator else 0.0
-        probability_up = 0.5 + 0.5 * direction_edge
-        expected_abs = abs_numerator / abs_denominator if abs_denominator else 0.0
-        magnitude_trust = float(np.average(
-            [s.magnitude_trust for s in states],
-            weights=[role_weights.get(s.horizon_minutes, 0.10) for s in states],
-        ))
-        direction_trust = float(np.average(
-            [s.direction_trust for s in states],
-            weights=[role_weights.get(s.horizon_minutes, 0.10) for s in states],
-        ))
-        overall_trust = math.sqrt(max(magnitude_trust, 0.0) * max(direction_trust, 0.0))
+        probability_big = (
+            magnitude_numerator / magnitude_denominator
+            if magnitude_denominator
+            else 0.5
+        )
+        validated_direction_edge = (
+            direction_numerator / direction_denominator
+            if direction_denominator
+            else 0.0
+        )
+        probability_up = 0.5 + 0.5 * validated_direction_edge
+        expected_abs = (
+            absolute_numerator / absolute_denominator
+            if absolute_denominator
+            else 0.0
+        )
+        weights = [role_weights.get(state.horizon_minutes, 0.10) for state in states]
+        magnitude_trust = float(
+            np.average([state.magnitude_trust for state in states], weights=weights)
+        )
+        direction_trust = float(
+            np.average([state.direction_trust for state in states], weights=weights)
+        )
+        overall_trust = math.sqrt(
+            max(magnitude_trust, 0.0) * max(direction_trust, 0.0)
+        )
 
         if magnitude_trust < 0.15:
             regime = "UNTRUSTED"
-        elif probability_big >= 0.65 and abs(direction_edge) >= 0.20 and direction_trust >= 0.20:
+        elif (
+            probability_big >= 0.65
+            and abs(validated_direction_edge) >= 0.20
+            and direction_trust >= 0.20
+        ):
             regime = "DIRECTIONAL_EXPANSION"
         elif probability_big >= 0.65:
             regime = "EXPANSION_UNCERTAIN_DIRECTION"
@@ -350,7 +450,9 @@ class V2ValidationStack:
             probability_big_move=float(np.clip(probability_big, 0.01, 0.99)),
             probability_up_given_big_move=float(np.clip(probability_up, 0.01, 0.99)),
             expected_abs_move_bps=max(0.0, expected_abs),
-            validated_direction_edge=float(np.clip(direction_edge, -1.0, 1.0)),
+            validated_direction_edge=float(
+                np.clip(validated_direction_edge, -1.0, 1.0)
+            ),
             magnitude_trust=float(np.clip(magnitude_trust, 0.0, 1.0)),
             direction_trust=float(np.clip(direction_trust, 0.0, 1.0)),
             overall_trust=float(np.clip(overall_trust, 0.0, 1.0)),
