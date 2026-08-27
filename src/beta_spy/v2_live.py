@@ -8,14 +8,16 @@ from .live import TradierMarketStream
 from .v2_hgb_direction import CausalHGBDirectionStack
 from .v2_mtf import V2MTFStack
 from .v2_predictive_state import CausalPredictiveStateStack
+from .v2_regime_forecast import forecast_regime
 
 
 class V2TradierMarketStream(TradierMarketStream):
     """Beta V2 live stream: publish causal intelligence, never an option strategy.
 
     HGB owns the validated directional witness. Predictive-state compression owns
-    regime/analog/path-distribution evidence. The older MTF stack remains an
-    independent magnitude/context channel. None of them may choose an option family.
+    regime/analog/path-distribution evidence. The explicit regime forecast turns
+    that state into duration and successor probabilities. None of these components
+    may choose an option family or place a trade.
     """
 
     def __init__(
@@ -57,17 +59,24 @@ class V2TradierMarketStream(TradierMarketStream):
         mtf = self.v2_stack.step(timestamp, snapshot.factors, spot)
         direction = self.direction_stack.step(timestamp, self.engine.states, spot)
         state = self.state_stack.step(timestamp, self.engine.states, spot)
+        regime_forecast = forecast_regime(state.as_dict())
 
         payload = mtf.as_dict()
         payload["mtf_context"] = mtf.as_dict()
         payload["hgb_direction"] = direction.as_dict()
         payload["predictive_state"] = state.as_dict()
+        payload["regime_forecast"] = regime_forecast.as_dict()
+        payload["regime_definable"] = regime_forecast.definable
+        payload["regime_confidence"] = regime_forecast.confidence
+        payload["regime_persistence_15"] = regime_forecast.persistence_15
+        payload["regime_persistence_30"] = regime_forecast.persistence_30
+        payload["expected_regime_duration_minutes"] = regime_forecast.expected_duration_minutes
+        payload["successor_regimes"] = regime_forecast.successor_probabilities
+        payload["most_likely_successor_regime"] = regime_forecast.most_likely_successor
+        payload["successor_regime_confidence"] = regime_forecast.successor_confidence
         payload["strategy_authority"] = False
-        payload["role"] = "direction_plus_empirical_state_distribution"
+        payload["role"] = "regime_duration_transition_and_distribution_intelligence"
 
-        # Direction remains the only currently validated entry trigger. State/P-Q
-        # regimes are fully published and counterfactually priced by Alpha, but must
-        # earn challenger authority under the execution-stress hurdle first.
         payload["eligible"] = bool(direction.eligible)
         payload["state"] = (
             "DIRECTIONAL_UP"
@@ -89,13 +98,16 @@ class V2TradierMarketStream(TradierMarketStream):
         payload["trust"] = max(
             float(payload.get("trust") or 0.0),
             min(1.0, max(0.0, direction.strength)),
+            regime_forecast.confidence if regime_forecast.definable else 0.0,
         )
         payload["agreement"] = 1.0 if direction.eligible else float(payload.get("agreement") or 0.0)
         payload["model_version"] = direction.model_version
         payload["reasons"] = [
             "hgb_daily_refit_direction_signal"
             if direction.eligible
-            else "state_distribution_ready_no_direction_authority"
+            else "regime_defined_waiting_for_monetizable_edge"
+            if regime_forecast.definable
+            else "state_distribution_ready_regime_uncertain"
             if state.ready
             else "v2_models_warming"
         ]
