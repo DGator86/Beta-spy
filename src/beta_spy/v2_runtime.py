@@ -4,13 +4,11 @@ import argparse
 import os
 import threading
 from dataclasses import asdict
-from datetime import UTC, datetime
-from pathlib import Path
+from datetime import datetime
 
 import uvicorn
 
 from .app import create_app
-from .historical import TradierHistoricalClient
 from .live import StateHub, TradierMarketStream
 from .replay import HistoricalReplay
 from .storage import Tape500Store
@@ -21,7 +19,7 @@ from .v2_engine import V2Tape500Engine
 class V2TradierMarketStream(TradierMarketStream):
     """Beta V2 publishes market state and never opens a new option position.
 
-    Alpha V2 is the sole payoff/strategy authority.  Any legacy Beta paper
+    Alpha V2 is the sole payoff/strategy authority. Any legacy Beta paper
     positions already present in the ledger continue to be marked, but this
     runtime never calls ``_option_plan`` or ``ledger.open_position``.
     """
@@ -88,7 +86,7 @@ def main() -> None:
                     "SELECT DISTINCT substr(timestamp, 1, 10) FROM minute_bars ORDER BY 1"
                 ).fetchall()
             ]
-        recent = dates[-max(0, args.warm_sessions):]
+        recent = dates[-max(0, args.warm_sessions) :]
         if not recent:
             return
         start = datetime.fromisoformat(recent[0] + "T00:00:00+00:00")
