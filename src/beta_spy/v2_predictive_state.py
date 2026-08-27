@@ -9,25 +9,87 @@ from typing import Any
 import numpy as np
 from sklearn.ensemble import ExtraTreesRegressor
 
-from .v2_hgb_direction import _bar_map, _breadth_stats, _exact_return, _realized_vol
-
 STATE_MODEL_VERSION = "beta-spy-v2-predictive-state-1"
 HORIZONS = (5, 15, 30)
 SIGNAL_GRID_MINUTES = 5
 MIN_TRAINING_SESSIONS = 5
 MIN_TRAINING_SAMPLES = 250
 ANALOG_K = 60
+N_ESTIMATORS = 48
+MAX_DEPTH = 6
+MIN_SAMPLES_LEAF = 12
+MAX_FEATURES = 0.65
 SAME_REGIME_BONUS = 1.25
-RETURN_HORIZONS = (1, 2, 3, 5, 10, 15, 20, 30, 60)
-RV_HORIZONS = (5, 10, 15, 30, 60)
-BREADTH_HORIZONS = (1, 2, 5, 10, 15, 30)
+
+_RETURN_HORIZONS = (1, 2, 3, 5, 10, 15, 20, 30, 60)
+_RV_HORIZONS = (5, 10, 15, 30, 60)
+_BREADTH_HORIZONS = (1, 2, 5, 10, 15, 30)
 
 
 def _minute(value: datetime) -> datetime:
     return value.astimezone(UTC).replace(second=0, microsecond=0)
 
 
-def _relative_volume(states: dict[str, Any], reference: datetime) -> tuple[float, float]:
+def _bar_map(state: Any, day) -> dict[datetime, Any]:
+    return {
+        _minute(bar.timestamp): bar
+        for bar in state.bars
+        if _minute(bar.timestamp).date() == day and float(bar.close) > 0
+    }
+
+
+def _close_maps(states: dict[str, Any], day) -> dict[str, dict[datetime, float]]:
+    return {
+        symbol: {stamp: float(bar.close) for stamp, bar in _bar_map(state, day).items()}
+        for symbol, state in states.items()
+    }
+
+
+def _exact_return(prices: dict[datetime, float], reference: datetime, periods: int) -> float | None:
+    current = prices.get(reference)
+    previous = prices.get(reference - timedelta(minutes=periods))
+    if current is None or previous is None or previous <= 0:
+        return None
+    return float(current / previous - 1.0)
+
+
+def _realized_vol(prices: dict[datetime, float], reference: datetime, minutes: int) -> float | None:
+    values: list[float] = []
+    for offset in range(minutes, -1, -1):
+        value = prices.get(reference - timedelta(minutes=offset))
+        if value is None or value <= 0:
+            return None
+        values.append(value)
+    returns = np.diff(np.log(np.asarray(values, dtype=float)))
+    if len(returns) < 2:
+        return 0.0
+    return float(np.std(returns, ddof=1) * math.sqrt(max(minutes - 1, 1)))
+
+
+def _breadth_stats(
+    close_maps: dict[str, dict[datetime, float]], reference: datetime, horizon: int
+) -> dict[str, float] | None:
+    values: list[float] = []
+    for symbol, prices in close_maps.items():
+        if symbol == "SPY":
+            continue
+        value = _exact_return(prices, reference, horizon)
+        if value is not None and math.isfinite(value):
+            values.append(value)
+    if len(values) < 100:
+        return None
+    array = np.asarray(values, dtype=float)
+    return {
+        "pos": float(np.mean(array > 0.0)),
+        "mean": float(np.mean(array)),
+        "med": float(np.median(array)),
+        "disp": float(np.std(array, ddof=0)),
+        "p10": float(np.quantile(array, 0.10)),
+        "p90": float(np.quantile(array, 0.90)),
+    }
+
+
+def _relative_volume_stats(states: dict[str, Any], day, reference: datetime) -> tuple[float, float]:
     values: list[float] = []
     for symbol, state in states.items():
         if symbol == "SPY":
@@ -49,38 +111,39 @@ def _relative_volume(states: dict[str, Any], reference: datetime) -> tuple[float
 
 
 def state_feature_vector(states: dict[str, Any], timestamp: datetime) -> np.ndarray | None:
-    """Exact causal state family used by the state/P-Q research replay.
+    """Leakage-resistant state vector matched to the validated research feature family.
 
-    No end-of-day variables are used. The latest permissible bar is the fully
-    completed minute immediately before ``timestamp``.
+    The engine flushes completed bars before calling this stack, so `timestamp - 1m`
+    is the most recent fully known minute. No future bar or end-of-session statistic is used.
     """
     reference = _minute(timestamp) - timedelta(minutes=1)
     day = reference.date()
     spy_state = states.get("SPY")
     if spy_state is None:
         return None
-    spy_bars = _bar_map(spy_state, day)
-    if reference not in spy_bars:
+    close_maps = _close_maps(states, day)
+    spy_prices = close_maps.get("SPY") or {}
+    if reference not in spy_prices:
         return None
-    prices = {stamp: float(bar.close) for stamp, bar in spy_bars.items()}
+    spy_bars = _bar_map(spy_state, day)
 
     returns: dict[int, float] = {}
-    for horizon in RETURN_HORIZONS:
-        value = _exact_return(prices, reference, horizon)
+    for horizon in _RETURN_HORIZONS:
+        value = _exact_return(spy_prices, reference, horizon)
         if value is None:
             return None
         returns[horizon] = value
 
     realized: dict[int, float] = {}
-    for horizon in RV_HORIZONS:
-        value = _realized_vol(prices, reference, horizon)
+    for horizon in _RV_HORIZONS:
+        value = _realized_vol(spy_prices, reference, horizon)
         if value is None:
             return None
         realized[horizon] = max(value, 1e-8)
 
     breadth: dict[int, dict[str, float]] = {}
-    for horizon in BREADTH_HORIZONS:
-        stats = _breadth_stats(states, day, reference, horizon)
+    for horizon in _BREADTH_HORIZONS:
+        stats = _breadth_stats(close_maps, reference, horizon)
         if stats is None:
             return None
         breadth[horizon] = stats
@@ -93,7 +156,8 @@ def state_feature_vector(states: dict[str, Any], timestamp: datetime) -> np.ndar
     high = max(float(bar.high) for bar in session)
     low = min(float(bar.low) for bar in session)
     session_range = max(high - low, 0.0)
-    range_pos = float(np.clip((spot - low) / session_range if session_range > 0 else 0.5, 0.0, 1.0))
+    range_pos = (spot - low) / session_range if session_range > 0 else 0.5
+    range_pos = float(np.clip(range_pos, 0.0, 1.0))
     range_edge_distance = min(range_pos, 1.0 - range_pos)
     session_range_bps = session_range / max(open_price, 1e-9) * 10_000.0
     from_open_bps = (spot / max(open_price, 1e-9) - 1.0) * 10_000.0
@@ -110,7 +174,7 @@ def state_feature_vector(states: dict[str, Any], timestamp: datetime) -> np.ndar
     session_vwap = pv / volume if volume > 0 else spot
     spy_vwap_bps = (spot / max(session_vwap, 1e-9) - 1.0) * 10_000.0
 
-    relvol_med, relvol_p90 = _relative_volume(states, reference)
+    relvol_med, relvol_p90 = _relative_volume_stats(states, day, reference)
     from zoneinfo import ZoneInfo
 
     local = reference.astimezone(ZoneInfo("America/New_York"))
@@ -118,35 +182,36 @@ def state_feature_vector(states: dict[str, Any], timestamp: datetime) -> np.ndar
     tod_sin = math.sin(2.0 * math.pi * fraction)
     tod_cos = math.cos(2.0 * math.pi * fraction)
 
+    mom_accel_1v5 = returns[1] - returns[5] / 5.0
+    mom_accel_5v15 = returns[5] / 5.0 - returns[15] / 15.0
+    breadth_accel_1_5 = breadth[1]["pos"] - breadth[5]["pos"]
+    breadth_accel_5_15 = breadth[5]["pos"] - breadth[15]["pos"]
+    spy_vs_breadth_5 = returns[5] - breadth[5]["med"]
+    spy_vs_breadth_15 = returns[15] - breadth[15]["med"]
+    vol_ratio_5_30 = realized[5] / max(realized[30], 1e-8)
+    vol_ratio_15_60 = realized[15] / max(realized[60], 1e-8)
+    breadth_trend_gap_5_30 = breadth[5]["pos"] - breadth[30]["pos"]
+
     values: list[float] = []
-    values.extend(returns[h] for h in RETURN_HORIZONS)
-    values.extend(realized[h] for h in RV_HORIZONS)
-    values.extend(
-        (
-            spy_vwap_bps,
-            session_range_bps,
-            range_pos,
-            from_open_bps,
-            returns[1] - returns[5] / 5.0,
-            returns[5] / 5.0 - returns[15] / 15.0,
-        )
-    )
-    for horizon in BREADTH_HORIZONS:
+    values.extend(returns[h] for h in _RETURN_HORIZONS)
+    values.extend(realized[h] for h in _RV_HORIZONS)
+    values.extend((spy_vwap_bps, session_range_bps, range_pos, from_open_bps, mom_accel_1v5, mom_accel_5v15))
+    for horizon in _BREADTH_HORIZONS:
         stats = breadth[horizon]
         values.extend(stats[key] for key in ("pos", "mean", "med", "disp", "p10", "p90"))
     values.extend(
         (
-            breadth[1]["pos"] - breadth[5]["pos"],
-            breadth[5]["pos"] - breadth[15]["pos"],
-            returns[5] - breadth[5]["med"],
-            returns[15] - breadth[15]["med"],
+            breadth_accel_1_5,
+            breadth_accel_5_15,
+            spy_vs_breadth_5,
+            spy_vs_breadth_15,
             relvol_med,
             relvol_p90,
             tod_sin,
             tod_cos,
-            realized[5] / max(realized[30], 1e-8),
-            realized[15] / max(realized[60], 1e-8),
-            breadth[5]["pos"] - breadth[30]["pos"],
+            vol_ratio_5_30,
+            vol_ratio_15_60,
+            breadth_trend_gap_5_30,
             range_edge_distance,
         )
     )
@@ -226,13 +291,6 @@ def _effective_n(weights: np.ndarray) -> float:
 
 @dataclass
 class CausalPredictiveStateStack:
-    """Predictive-state compressor plus empirical analog future distribution.
-
-    ExtraTrees learns the similarity metric from completed prior-session 5/15/30m
-    outcomes. The tree-leaf proximity then selects historical analogs; Alpha receives
-    their actual outcomes and weights rather than a Gaussian fiction.
-    """
-
     pending: deque[_Pending] = field(default_factory=deque)
     x: list[np.ndarray] = field(default_factory=list)
     y5: list[float] = field(default_factory=list)
@@ -257,36 +315,14 @@ class CausalPredictiveStateStack:
     @staticmethod
     def _new_model() -> ExtraTreesRegressor:
         return ExtraTreesRegressor(
-            n_estimators=48,
-            max_depth=6,
-            min_samples_leaf=12,
-            max_features=0.65,
+            n_estimators=N_ESTIMATORS,
+            max_depth=MAX_DEPTH,
+            min_samples_leaf=MIN_SAMPLES_LEAF,
+            max_features=MAX_FEATURES,
             bootstrap=False,
             n_jobs=-1,
             random_state=42,
         )
-
-    @staticmethod
-    def _regimes(
-        pred: np.ndarray,
-        rv15: np.ndarray,
-        abs_lo: float,
-        abs_hi: float,
-        rv_median: float,
-    ) -> np.ndarray:
-        p5, p15, p30, pabs = pred.T
-        aligned = (
-            (np.sign(p5) == np.sign(p15))
-            & (np.sign(p15) == np.sign(p30))
-            & (np.sign(p15) != 0)
-        )
-        directional = aligned & (np.abs(p15) >= 0.35 * np.maximum(pabs, 1e-6))
-        out = np.full(len(pred), "TRANSITION", dtype=object)
-        out[(pabs <= abs_lo) & (rv15 <= rv_median)] = "QUIET"
-        out[(pabs >= abs_hi) & ~directional] = "EXPANSION"
-        out[directional & (p15 > 0)] = "DIRECTIONAL_UP"
-        out[directional & (p15 < 0)] = "DIRECTIONAL_DOWN"
-        return out
 
     def _mature(self, timestamp: datetime, spy_price: float) -> None:
         kept: deque[_Pending] = deque()
@@ -302,11 +338,9 @@ class CausalPredictiveStateStack:
             if item.y15 is None and elapsed >= 15:
                 item.y15 = realized
                 if item.forecast_mean15 is not None and item.forecast_sigma15 not in (None, 0.0):
+                    z = abs(realized - item.forecast_mean15) / max(float(item.forecast_sigma15), 0.50)
                     self.validation_dates.append(item.session_date)
-                    self.validation_z15.append(
-                        abs(realized - item.forecast_mean15)
-                        / max(float(item.forecast_sigma15), 0.50)
-                    )
+                    self.validation_z15.append(float(z))
             if elapsed >= 30:
                 if item.y5 is not None and item.y15 is not None and math.isfinite(realized):
                     self.x.append(item.vector)
@@ -318,28 +352,38 @@ class CausalPredictiveStateStack:
             kept.append(item)
         self.pending = kept
 
+    @staticmethod
+    def _regimes(pred: np.ndarray, rv15: np.ndarray, abs_lo: float, abs_hi: float, rv_median: float) -> np.ndarray:
+        p5, p15, p30, pabs = pred.T
+        aligned = (np.sign(p5) == np.sign(p15)) & (np.sign(p15) == np.sign(p30)) & (np.sign(p15) != 0)
+        directional = aligned & (np.abs(p15) >= 0.35 * np.maximum(pabs, 1e-6))
+        out = np.full(len(pred), "TRANSITION", dtype=object)
+        out[(pabs <= abs_lo) & (rv15 <= rv_median)] = "QUIET"
+        out[(pabs >= abs_hi) & ~directional] = "EXPANSION"
+        out[directional & (p15 > 0)] = "DIRECTIONAL_UP"
+        out[directional & (p15 < 0)] = "DIRECTIONAL_DOWN"
+        return out
+
     def _refit_for_session(self, session_date) -> None:
         self.current_session = session_date
+        sessions = sorted(set(self.sample_dates))
         prior_z = [
             value
             for day, value in zip(self.validation_dates, self.validation_z15, strict=False)
             if day < session_date
         ]
-        self.session_conformal_scale = (
-            float(np.clip(np.quantile(prior_z, 0.90) / 1.645, 0.85, 1.50))
-            if len(prior_z) >= 250
-            else 1.10
-        )
-        if len(set(self.sample_dates)) < MIN_TRAINING_SESSIONS or len(self.y15) < MIN_TRAINING_SAMPLES:
+        if len(prior_z) >= 250:
+            self.session_conformal_scale = float(np.clip(np.quantile(prior_z, 0.90) / 1.645, 0.85, 1.50))
+        else:
+            self.session_conformal_scale = 1.10
+        if len(sessions) < MIN_TRAINING_SESSIONS or len(self.y15) < MIN_TRAINING_SAMPLES:
             self.forest = None
             return
         self.fit_x = np.vstack(self.x)
         self.fit_y5 = np.asarray(self.y5, dtype=float)
         self.fit_y15 = np.asarray(self.y15, dtype=float)
         self.fit_y30 = np.asarray(self.y30, dtype=float)
-        targets = np.column_stack(
-            (self.fit_y5, self.fit_y15, self.fit_y30, np.abs(self.fit_y15))
-        )
+        targets = np.column_stack((self.fit_y5, self.fit_y15, self.fit_y30, np.abs(self.fit_y15)))
         self.forest = self._new_model().fit(self.fit_x, targets)
         self.fit_leaves = self.forest.apply(self.fit_x)
         pred = self.forest.predict(self.fit_x)
@@ -349,9 +393,9 @@ class CausalPredictiveStateStack:
         self.fit_regimes = self._regimes(pred, rv15, self.abs_lo, self.abs_hi, self.rv_median)
 
     def _distribution(self, timestamp: datetime, vector: np.ndarray) -> PredictiveStateDistribution:
-        assert self.forest is not None
-        assert self.fit_leaves is not None and self.fit_regimes is not None
+        assert self.forest is not None and self.fit_x is not None and self.fit_leaves is not None
         assert self.fit_y5 is not None and self.fit_y15 is not None and self.fit_y30 is not None
+        assert self.fit_regimes is not None
         pred = self.forest.predict(vector.reshape(1, -1))[0]
         leaf = self.forest.apply(vector.reshape(1, -1))[0]
         proximity = np.mean(self.fit_leaves == leaf, axis=1)
@@ -368,13 +412,12 @@ class CausalPredictiveStateStack:
         score[self.fit_regimes == regime] *= SAME_REGIME_BONUS
         k = min(ANALOG_K, len(score))
         indices = np.argpartition(score, -k)[-k:] if k < len(score) else np.arange(len(score))
-        weights = np.maximum(score[indices], 1e-4) ** 2
+        weighted_score = np.maximum(score[indices], 1e-4)
+        weights = weighted_score * weighted_score
         weights /= weights.sum()
 
-        def stats(
-            source: np.ndarray, threshold: float
-        ) -> tuple[float, float, float, float, dict[str, float]]:
-            values = source[indices]
+        def stats(y: np.ndarray, threshold: float) -> tuple[float, float, float, float, dict[str, float]]:
+            values = y[indices]
             mean = float(np.dot(weights, values))
             sigma = math.sqrt(max(float(np.dot(weights, (values - mean) ** 2)), 1e-9))
             p_up = float(np.dot(weights, (values > 0).astype(float)))
@@ -391,6 +434,15 @@ class CausalPredictiveStateStack:
         y5 = self.fit_y5[indices]
         y15 = self.fit_y15[indices]
         y30 = self.fit_y30[indices]
+        persistent = float(
+            np.dot(
+                weights,
+                ((np.sign(y5) == np.sign(y15)) & (np.sign(y15) == np.sign(y30))).astype(float),
+            )
+        )
+        reversal15 = float(np.dot(weights, (np.sign(y5) != np.sign(y15)).astype(float)))
+        reversal30 = float(np.dot(weights, (np.sign(y15) != np.sign(y30)).astype(float)))
+        acceleration = float(np.dot(weights, (np.abs(y30) > 1.35 * np.abs(y15)).astype(float)))
         return PredictiveStateDistribution(
             timestamp=timestamp,
             ready=True,
@@ -418,27 +470,17 @@ class CausalPredictiveStateStack:
             quantiles_5=q5,
             quantiles_15=q15,
             quantiles_30=q30,
-            p_persistent_30=float(
-                np.dot(
-                    weights,
-                    ((np.sign(y5) == np.sign(y15)) & (np.sign(y15) == np.sign(y30))).astype(float),
-                )
-            ),
-            p_reversal_15=float(np.dot(weights, (np.sign(y5) != np.sign(y15)).astype(float))),
-            p_reversal_30=float(np.dot(weights, (np.sign(y15) != np.sign(y30)).astype(float))),
-            p_acceleration=float(np.dot(weights, (np.abs(y30) > 1.35 * np.abs(y15)).astype(float))),
+            p_persistent_30=persistent,
+            p_reversal_15=reversal15,
+            p_reversal_30=reversal30,
+            p_acceleration=acceleration,
             analog_y15_bps=tuple(float(x) for x in y15),
             analog_weights=tuple(float(x) for x in weights),
             training_sessions=len(set(self.sample_dates)),
             training_samples=len(self.y15),
         )
 
-    def step(
-        self,
-        timestamp: datetime,
-        states: dict[str, Any],
-        spy_price: float,
-    ) -> PredictiveStateDistribution:
+    def step(self, timestamp: datetime, states: dict[str, Any], spy_price: float) -> PredictiveStateDistribution:
         self._mature(timestamp, spy_price)
         if self.current_session != timestamp.date():
             self._refit_for_session(timestamp.date())
@@ -446,11 +488,11 @@ class CausalPredictiveStateStack:
         vector = state_feature_vector(states, timestamp) if on_grid else None
         ready = bool(on_grid and vector is not None and self.forest is not None)
         if ready and vector is not None:
-            result = self._distribution(timestamp, vector)
-            forecast_mean = result.mean_15
-            forecast_sigma = result.sigma_15
+            distribution = self._distribution(timestamp, vector)
+            forecast_mean = distribution.mean_15
+            forecast_sigma = distribution.sigma_15
         else:
-            result = PredictiveStateDistribution(
+            distribution = PredictiveStateDistribution(
                 timestamp=timestamp,
                 ready=False,
                 regime="WARMING",
@@ -489,7 +531,6 @@ class CausalPredictiveStateStack:
             forecast_mean = None
             forecast_sigma = None
 
-        # Cold-start observations are queued too; otherwise the model could never warm.
         if on_grid and vector is not None and spy_price > 0:
             self.pending.append(
                 _Pending(
@@ -501,4 +542,4 @@ class CausalPredictiveStateStack:
                     forecast_sigma15=forecast_sigma,
                 )
             )
-        return result
+        return distribution
