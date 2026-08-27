@@ -29,7 +29,6 @@ def test_direction_training_ignores_small_moves() -> None:
     vector = np.asarray([0.1, 0.2], dtype=float)
 
     model.queue(now, vector, 100.0, model.raw_predict(vector))
-    # +2 bps is below V2's 7.5-bp 15m economic threshold.
     model.mature(now + timedelta(minutes=15), 100.02)
 
     assert model.sample_count == 1
@@ -55,6 +54,25 @@ def test_direction_alignment_can_be_negative() -> None:
 
     assert direction_trust > 0
     assert signed_alignment < 0
+
+
+def test_magnitude_trust_survives_persistent_expansion_regime() -> None:
+    model = V2HorizonModel(horizon_minutes=15, min_samples=1)
+    for _ in range(80):
+        model.validations.append(
+            _ValidationRecord(
+                raw_big_probability=0.95,
+                raw_up_probability=0.5,
+                realized_big=True,
+                realized_up=True,
+                realized_abs_bps=14.0,
+            )
+        )
+
+    magnitude_trust, _direction_trust, _signed_alignment = model._validation_metrics()
+
+    assert 0.0 < model._magnitude_base_rate() < 1.0
+    assert magnitude_trust > 0
 
 
 def test_beta_v2_has_no_strategy_authority() -> None:
