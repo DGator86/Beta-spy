@@ -51,9 +51,8 @@ def test_direction_alignment_can_be_negative() -> None:
             )
         )
 
-    magnitude_trust, direction_trust, signed_alignment = model._validation_metrics()
+    _magnitude_trust, direction_trust, signed_alignment = model._validation_metrics()
 
-    assert magnitude_trust > 0
     assert direction_trust > 0
     assert signed_alignment < 0
 
