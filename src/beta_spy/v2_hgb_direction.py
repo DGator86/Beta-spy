@@ -30,6 +30,16 @@ def _bar_map(state: Any, day) -> dict[datetime, float]:
     }
 
 
+def _price_maps(states: dict[str, Any], day) -> dict[str, dict[datetime, float]]:
+    """Materialize each symbol once per signal timestamp.
+
+    The first prototype rebuilt 500 price dictionaries once for every breadth
+    horizon. That was exact but wasteful. This preserves identical features while
+    reducing the hot-path work by roughly the number of breadth horizons.
+    """
+    return {symbol: _bar_map(state, day) for symbol, state in states.items()}
+
+
 def _exact_return(prices: dict[datetime, float], reference: datetime, periods: int) -> float | None:
     current = prices.get(reference)
     previous = prices.get(reference - timedelta(minutes=periods))
@@ -52,13 +62,12 @@ def _realized_vol(prices: dict[datetime, float], reference: datetime, minutes: i
 
 
 def _breadth_stats(
-    states: dict[str, Any], day, reference: datetime, horizon: int
+    price_maps: dict[str, dict[datetime, float]], reference: datetime, horizon: int
 ) -> dict[str, float] | None:
     values: list[float] = []
-    for symbol, state in states.items():
+    for symbol, prices in price_maps.items():
         if symbol == "SPY":
             continue
-        prices = _bar_map(state, day)
         value = _exact_return(prices, reference, horizon)
         if value is not None and math.isfinite(value):
             values.append(value)
@@ -83,12 +92,10 @@ def trailing_feature_vectors(states: dict[str, Any], timestamp: datetime) -> tup
     minute timestamp: a missing constituent minute is excluded instead of being
     silently treated as a longer return interval.
     """
-    spy_state = states.get("SPY")
-    if spy_state is None:
-        return None
     reference = timestamp.replace(second=0, microsecond=0) - timedelta(minutes=1)
     day = reference.date()
-    spy = _bar_map(spy_state, day)
+    price_maps = _price_maps(states, day)
+    spy = price_maps.get("SPY") or {}
     if reference not in spy:
         return None
 
@@ -108,7 +115,7 @@ def trailing_feature_vectors(states: dict[str, Any], timestamp: datetime) -> tup
 
     breadth: dict[int, dict[str, float]] = {}
     for horizon in _BREADTH_HORIZONS:
-        stats = _breadth_stats(states, day, reference, horizon)
+        stats = _breadth_stats(price_maps, reference, horizon)
         if stats is None:
             return None
         breadth[horizon] = stats
@@ -207,9 +214,9 @@ class HGBDirectionSignal:
 class CausalHGBDirectionStack:
     """Daily-refit 15m HGB ensemble matched to the profitable walk-forward protocol.
 
-    Samples are collected on a five-minute grid and released only after the
-    15-minute target matures. Models refit only when the session date advances,
-    so current-session outcomes can never affect that session's model.
+    Every five-minute observation is queued whether or not a model is warm. Its
+    outcome is released only after +15 minutes. Models refit only when the session
+    date advances, so no current-session label can alter that session's model.
     """
 
     pending: deque[_Pending] = field(default_factory=deque)
@@ -284,11 +291,10 @@ class CausalHGBDirectionStack:
         if self.current_session != timestamp.date():
             self._refit_for_session(timestamp.date())
 
-        vectors = trailing_feature_vectors(states, timestamp)
         on_grid = timestamp.minute % SIGNAL_GRID_MINUTES == 0
+        vectors = trailing_feature_vectors(states, timestamp) if on_grid else None
         ready = bool(
-            on_grid
-            and vectors is not None
+            vectors is not None
             and self.core_model is not None
             and self.breadth_model is not None
             and self.core_scaler is not None
@@ -299,8 +305,11 @@ class CausalHGBDirectionStack:
         eligible = False
         direction = "FLAT"
         probability_up = 0.5
-        if ready and vectors is not None:
+        core: np.ndarray | None = None
+        breadth: np.ndarray | None = None
+        if vectors is not None:
             core, breadth = vectors
+        if ready and core is not None and breadth is not None:
             core_pred = float(self.core_model.predict(self.core_scaler.transform(core.reshape(1, -1)))[0])
             breadth_pred = float(
                 self.breadth_model.predict(self.breadth_scaler.transform(breadth.reshape(1, -1)))[0]
@@ -315,6 +324,10 @@ class CausalHGBDirectionStack:
             direction = "BULLISH" if expected > 0 else "BEARISH"
             probability_up = self._probability_up(expected, strength)
 
+        # Queue all valid five-minute observations, including the cold-start
+        # sessions. Otherwise the stack could never accumulate enough samples to
+        # become ready.
+        if core is not None and breadth is not None and spy_price > 0:
             self.pending.append(
                 _Pending(
                     target_time=timestamp + timedelta(minutes=HORIZON_MINUTES),
