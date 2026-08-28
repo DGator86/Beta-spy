@@ -12,13 +12,19 @@ import pytest
 from beta_spy.premium import (
     ChainGate,
     PremiumConfig,
+    PositionState,
     PremiumStructure,
     StructureLeg,
     assess_day,
     build_condor,
     build_credit_spread,
+    decay_remaining,
+    expected_remaining_move,
     manage_position,
+    monitor,
+    required_credit_ratio,
     size_position,
+    strike_pressure,
 )
 
 
@@ -296,3 +302,129 @@ def test_unusable_snapshot_is_not_an_exit_signal():
     assert condor is not None
     empty = ChainGate().clean(750.0, [])
     assert manage_position(condor, empty, "13:00") == (None, None)
+
+
+# --------------------------------------------------------------------------
+# the session clock
+# --------------------------------------------------------------------------
+def test_decay_remaining_runs_from_entry_window_to_flatten():
+    cfg = PremiumConfig(entry_after="10:00", flatten_at="15:30")
+    assert decay_remaining("10:00", cfg) == pytest.approx(1.0)
+    assert decay_remaining("15:30", cfg) == pytest.approx(0.0)
+    assert decay_remaining("12:45", cfg) == pytest.approx(0.5)
+    # decay after the flatten time is decay this book never collects
+    assert decay_remaining("15:59", cfg) == pytest.approx(0.0)
+
+
+def test_late_entries_must_pay_more_for_the_same_tail():
+    cfg = PremiumConfig(min_credit_ratio=0.12)
+    early = required_credit_ratio("10:00", cfg)
+    late = required_credit_ratio("14:00", cfg)
+    assert early == pytest.approx(0.12)
+    assert late > early * 3
+    # floored so it cannot go to infinity at the flatten time
+    assert required_credit_ratio("15:30", cfg) == pytest.approx(0.60)
+
+
+def test_expected_remaining_move_shrinks_with_the_square_root_of_time():
+    cfg = PremiumConfig(entry_after="10:00", flatten_at="15:30")
+    market = {"expected_range": 4.0}
+    assert expected_remaining_move(market, "10:00", cfg) == pytest.approx(4.0)
+    assert expected_remaining_move(market, "12:45", cfg) == pytest.approx(4.0 * 0.5**0.5)
+    assert expected_remaining_move({}, "10:00", cfg) is None
+
+
+# --------------------------------------------------------------------------
+# strike pressure
+# --------------------------------------------------------------------------
+def test_strike_pressure_measures_buffer_in_remaining_moves():
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    cfg = PremiumConfig(entry_after="10:00", flatten_at="15:30")
+    market = {"expected_range": 2.0}
+    # spot 750, shorts at 748/752 -> 2.0 points of buffer against a 2.0 move
+    assert strike_pressure(condor, 750.0, market, "10:00", cfg) == pytest.approx(1.0)
+    # same spot later in the day: less time, less expected travel, safer
+    assert strike_pressure(condor, 750.0, market, "12:45", cfg) > 1.0
+    # spot drifting toward the short put eats the buffer
+    assert strike_pressure(condor, 749.0, market, "10:00", cfg) == pytest.approx(0.5)
+
+
+def test_a_position_cannot_violate_its_own_entry_gate_at_inception():
+    """An absolute pressure floor near the median entry value is an instruction
+    to close immediately. The gate belongs on entry, the exit on the buffer."""
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    cfg = PremiumConfig(entry_after="10:00", flatten_at="15:30")
+    entry = strike_pressure(condor, 750.0, {"expected_range": 2.0}, "10:00", cfg)
+    assert entry is not None and entry >= cfg.min_entry_pressure
+
+
+# --------------------------------------------------------------------------
+# sizing
+# --------------------------------------------------------------------------
+def test_size_scales_down_as_decay_runs_out():
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    cfg = PremiumConfig(risk_fraction=0.25, late_entry_size_scale=True, max_contracts=10_000,
+                        entry_after="10:00", flatten_at="15:30", min_survivable_losses=0)
+    early = size_position(100_000.0, condor, cfg, now_hhmm="10:00")
+    late = size_position(100_000.0, condor, cfg, now_hhmm="12:45")
+    assert early > 0
+    assert late == pytest.approx(early / 2, rel=0.02)
+
+
+def test_size_never_exceeds_what_the_account_can_survive():
+    """Fixed-fractional sizing does not give survivability for free once the
+    one-lot floor binds."""
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    greedy = PremiumConfig(risk_fraction=0.90, min_survivable_losses=0, late_entry_size_scale=False)
+    safe = PremiumConfig(risk_fraction=0.90, min_survivable_losses=4, late_entry_size_scale=False)
+    # max_loss ~1.20/share -> ~$120/contract on a $1,200 account
+    unconstrained = size_position(1_200.0, condor, greedy)
+    survivable = size_position(1_200.0, condor, safe)
+    assert unconstrained >= 8, "90% of equity buys most of the account"
+    assert survivable == 2, "four max losses must still leave a tradeable account"
+    assert survivable * 4 * condor.max_loss * 100 <= 1_200.0
+
+
+# --------------------------------------------------------------------------
+# monitoring
+# --------------------------------------------------------------------------
+def _state(structure, entry_pressure=2.0):
+    return PositionState(structure=structure, contracts=1, entry_hhmm="10:00",
+                         entry_pressure=entry_pressure)
+
+
+def test_monitor_records_unusable_marks_without_exiting_on_them():
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    state = _state(condor)
+    result = monitor(state, ChainGate().clean(750.0, []), {"expected_range": 2.0}, "13:00")
+    assert result.hold
+    assert result.value is None
+    assert state.marks_unusable == 1 and state.consecutive_unusable == 1
+
+
+def test_monitor_flattens_on_the_clock_even_without_a_usable_mark():
+    """The clock must not be disableable by a bad chain."""
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    result = monitor(_state(condor), ChainGate().clean(750.0, []), {}, "15:30")
+    assert result.exit_reason == "flat_eod"
+
+
+def test_risk_exit_is_off_by_default_and_relative_when_enabled():
+    """Cutting a defined-risk short structure early was destructive at every
+    threshold measured; the wing is already the risk control."""
+    condor = build_condor(_condor_chain(), PremiumConfig(short_delta=0.16, wing_points=2.0))
+    assert condor is not None
+    chain = _condor_chain()
+    market = {"expected_range": 2.0}
+    # buffer has halved from entry
+    assert monitor(_state(condor, entry_pressure=2.0), chain, market, "10:00").hold
+    enabled = PremiumConfig(pressure_exit_ratio=0.75)
+    fired = monitor(_state(condor, entry_pressure=2.0), chain, market, "10:00", enabled)
+    assert fired.exit_reason == "risk"
+    assert "buffer down to" in fired.note
