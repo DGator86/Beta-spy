@@ -2,7 +2,9 @@
 """Export today's RTH tape and copy it to the Google Drive backup remote.
 
 Writes a compressed archive under session-tapes/YYYY-MM-DD/ on the same
-rclone remote the nightly database snapshots use.
+rclone remote the nightly database snapshots use.  Tape schema v2 preserves
+Beta's own factors/forecasts in addition to the market tape and sampled Alpha
+signals, so cross-model replay does not lose the Beta witness stream.
 """
 from __future__ import annotations
 
@@ -20,10 +22,17 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 BETA_DB = Path("/var/lib/beta-spy/beta-spy.sqlite")
 ALPHA_DB = Path("/var/lib/alpha-spy/journal/alpha-spy.db")
+TAPE_SCHEMA_VERSION = 2
 
 
 def session_bounds(day: str) -> tuple[str, str]:
-    start = datetime.fromisoformat(day).replace(tzinfo=ET, hour=9, minute=30, second=0, microsecond=0)
+    start = datetime.fromisoformat(day).replace(
+        tzinfo=ET,
+        hour=9,
+        minute=30,
+        second=0,
+        microsecond=0,
+    )
     end = start.replace(hour=16, minute=0)
     return (
         start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -46,7 +55,14 @@ def write_rows(rows: list[dict], dest: Path) -> int:
     return len(rows)
 
 
-def dump_between(conn: sqlite3.Connection, table: str, ts_col: str, dest: Path, start: str, end: str) -> int:
+def dump_between(
+    conn: sqlite3.Connection,
+    table: str,
+    ts_col: str,
+    dest: Path,
+    start: str,
+    end: str,
+) -> int:
     cols = [row[1] for row in conn.execute(f"pragma table_info({table})")]
     if ts_col not in cols:
         return write_rows([], dest)
@@ -54,7 +70,8 @@ def dump_between(conn: sqlite3.Connection, table: str, ts_col: str, dest: Path, 
     rows = [
         dict(row)
         for row in conn.execute(
-            f"SELECT * FROM {table} WHERE {ts_col} >= ? AND {ts_col} < ? ORDER BY {ts_col}",
+            f"SELECT * FROM {table} WHERE {ts_col} >= ? AND {ts_col} < ? "
+            f"ORDER BY {ts_col}",
             (start, end),
         )
     ]
@@ -75,15 +92,79 @@ def main() -> int:
     try:
         if BETA_DB.exists():
             beta = sqlite3.connect(f"file:{BETA_DB}?mode=ro", uri=True)
-            counts["minute_bars"] = dump_between(beta, "minute_bars", "timestamp", out_dir / "minute_bars.csv", start, end)
-            counts["spy_trades"] = dump_between(beta, "spy_trades", "timestamp", out_dir / "spy_trades.csv", start, end)
-            counts["spy_quotes"] = dump_between(beta, "spy_quotes", "timestamp", out_dir / "spy_quotes.csv", start, end)
-            counts["decisions"] = dump_between(beta, "decisions", "timestamp", out_dir / "decisions.json", start, end)
+            counts["minute_bars"] = dump_between(
+                beta,
+                "minute_bars",
+                "timestamp",
+                out_dir / "minute_bars.csv",
+                start,
+                end,
+            )
+            counts["spy_trades"] = dump_between(
+                beta,
+                "spy_trades",
+                "timestamp",
+                out_dir / "spy_trades.csv",
+                start,
+                end,
+            )
+            counts["spy_quotes"] = dump_between(
+                beta,
+                "spy_quotes",
+                "timestamp",
+                out_dir / "spy_quotes.csv",
+                start,
+                end,
+            )
+            counts["beta_factors"] = dump_between(
+                beta,
+                "factor_snapshots",
+                "timestamp",
+                out_dir / "beta_factors.json",
+                start,
+                end,
+            )
+            counts["beta_forecasts"] = dump_between(
+                beta,
+                "forecasts",
+                "timestamp",
+                out_dir / "beta_forecasts.csv",
+                start,
+                end,
+            )
+            counts["decisions"] = dump_between(
+                beta,
+                "decisions",
+                "timestamp",
+                out_dir / "decisions.json",
+                start,
+                end,
+            )
+            # Explicit provenance alias for schema-v2 consumers.  Keep the old
+            # file name above so existing tape readers remain compatible.
+            counts["beta_decisions"] = dump_between(
+                beta,
+                "decisions",
+                "timestamp",
+                out_dir / "beta_decisions.json",
+                start,
+                end,
+            )
             counts["paper_positions"] = dump_between(
-                beta, "paper_positions", "opened_at", out_dir / "paper_positions.json", start, end
+                beta,
+                "paper_positions",
+                "opened_at",
+                out_dir / "paper_positions.json",
+                start,
+                end,
             )
             counts["alpha_signals"] = dump_between(
-                beta, "alpha_signals", "timestamp", out_dir / "alpha_signals.json", start, end
+                beta,
+                "alpha_signals",
+                "timestamp",
+                out_dir / "alpha_signals.json",
+                start,
+                end,
             )
             beta.close()
         if ALPHA_DB.exists():
@@ -108,6 +189,8 @@ def main() -> int:
         (out_dir / "manifest.txt").write_text(
             "\n".join(
                 [
+                    f"tape_schema_version={TAPE_SCHEMA_VERSION}",
+                    "tape_source=beta-spy",
                     f"day={day}",
                     f"session_start_utc={start}",
                     f"session_end_utc={end}",
