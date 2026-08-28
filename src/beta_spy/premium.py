@@ -21,12 +21,23 @@ against roughly 360 minutes of available decay, which is a directional bet
 wearing a theta label. Positions here are opened once, early, and held to a
 profit target or to the close.
 
-*The tail is the whole game.* Over the same 25 sessions a naive 16-delta condor
-won 11 days of 20 and still lost money, because three days erased eleven wins.
-The median day's realised move was 0.96x its implied move -- the typical day
-pays. Survival is therefore not about picking direction, it is about being
-small or absent when the range breaks. :func:`assess_day` is the stand-aside
-gate and :func:`size_position` assumes the tail will arrive.
+*The tail is the whole game, and the exits are the edge.* Over the same 25
+sessions a naive 16-delta condor won 11 days of 20 and still lost money,
+because three days erased eleven wins. The median day's realised move was 0.96x
+its implied move -- the typical day pays. Survival is therefore not about
+picking direction, it is about being small or absent when the range breaks.
+:func:`assess_day` is the stand-aside gate and :func:`size_position` assumes
+the tail will arrive.
+
+More pointedly: on the sampled sessions, **two settlements in twelve landed
+beyond a long wing** -- a full max loss had the position been held to expiry.
+Break-even for this strategy is one full max-loss day in thirty-four. Held to
+settlement it is therefore deeply negative on this tape; the only reason it
+shows a profit is that the profit target and the 15:45 flat get it out first.
+The exits are not housekeeping, they carry the entire result, and they run on
+option marks -- the least reliable input in the system. That is why
+:class:`ChainGate` and the bound clamp in :meth:`PremiumStructure.value_at`
+are not defensive extras but load-bearing parts of the strategy.
 
 Nothing in the stand-aside gate is fitted to the sample. Each rule is one that
 can be argued for before seeing the data; the one empirically suggestive signal
@@ -131,6 +142,42 @@ class PremiumConfig:
     """Below this the options are not paying enough to be worth the tail."""
     gamma_filter: bool = False
     """Unproven. See module docstring: p = 0.108 over 20 sessions."""
+
+    @classmethod
+    def ramp(cls, **overrides: Any) -> "PremiumConfig":
+        """Aggressive preset for compounding a small account to a fixed target.
+
+        One-point wings, because at a $1,000 account a two-point condor is $163
+        of risk -- 16% of the account in a single lot, six max-loss days from
+        being unable to trade at all. One-point wings are $79, which buys
+        twelve.
+
+        Sizing is 25%, which is where the probability of reaching a 15x target
+        peaks in simulation. **Going above it is strictly worse on both axes:**
+        at 50% the chance of reaching the target falls and the chance of
+        busting rises, because beyond the growth-optimal fraction the drag from
+        variance outruns the edge.
+
+        Simulated on 12 sessions of captured tape, $1,000 to $15,000, resampling
+        daily returns and drawing the true edge from its own confidence interval:
+
+            risk    P(reach 15k)   P(bust)   median
+            15%          49.2%      39.9%    224 sessions
+            20%          50.9%      41.6%    166
+            25%          52.3%      42.6%    138
+            35%          52.2%      45.8%    100
+            50%          48.9%      50.8%     68
+
+        Those figures assume full max-loss days never occur, which is what the
+        sample shows and is almost certainly optimistic. Break-even sits at one
+        full max-loss day per 34 sessions; two of the twelve sampled sessions
+        would have been full losses had they been held to settlement. The
+        strategy is only positive because it exits early -- see the module
+        docstring. Treat these numbers as an upper bound, not a forecast.
+        """
+        base = {"wing_points": 1.0, "risk_fraction": 0.25, "max_contracts": 50}
+        base.update(overrides)
+        return cls(**base)  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
