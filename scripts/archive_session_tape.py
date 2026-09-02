@@ -4,6 +4,8 @@
 V2 expands the tape from a SPY-path summary into deterministic replay evidence:
 full Alpha market snapshots/quotes, full 0DTE option-chain snapshots and contracts,
 features, predictions, candidates, decisions, orders, positions and matured outcomes.
+It also preserves Beta's own factor/forecast/witness stream so cross-model replay
+never has to reconstruct the independent witness from downstream decisions.
 """
 from __future__ import annotations
 
@@ -21,6 +23,7 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 BETA_DB = Path("/var/lib/beta-spy/beta-spy.sqlite")
 ALPHA_DB = Path("/var/lib/alpha-spy/journal/alpha-spy.db")
+TAPE_SCHEMA_VERSION = 3
 
 
 def session_bounds(day: str) -> tuple[str, str]:
@@ -127,8 +130,32 @@ def main() -> int:
             counts["spy_quotes"] = dump_between(
                 beta, "spy_quotes", "timestamp", out_dir / "spy_quotes.csv", start, end
             )
+            counts["beta_factors"] = dump_between(
+                beta,
+                "factor_snapshots",
+                "timestamp",
+                out_dir / "beta_factors.json",
+                start,
+                end,
+            )
+            counts["beta_forecasts"] = dump_between(
+                beta,
+                "forecasts",
+                "timestamp",
+                out_dir / "beta_forecasts.csv",
+                start,
+                end,
+            )
             counts["decisions"] = dump_between(
                 beta, "decisions", "timestamp", out_dir / "decisions.json", start, end
+            )
+            counts["beta_decisions"] = dump_between(
+                beta,
+                "decisions",
+                "timestamp",
+                out_dir / "beta_decisions.json",
+                start,
+                end,
             )
             counts["paper_positions"] = dump_between(
                 beta,
@@ -274,6 +301,8 @@ def main() -> int:
         (out_dir / "manifest.txt").write_text(
             "\n".join(
                 [
+                    f"tape_schema_version={TAPE_SCHEMA_VERSION}",
+                    "tape_source=beta-spy-v2",
                     f"day={day}",
                     f"session_start_utc={start}",
                     f"session_end_utc={end}",
