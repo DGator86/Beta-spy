@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Export today's RTH tape and copy it to the Google Drive backup remote.
+"""Export today's RTH Beta/Alpha tape and copy it to the Google Drive backup remote.
 
-Writes a compressed archive under session-tapes/YYYY-MM-DD/ on the same
-rclone remote the nightly database snapshots use.  Tape schema v2 preserves
-Beta's own factors/forecasts in addition to the market tape and sampled Alpha
-signals, so cross-model replay does not lose the Beta witness stream.
+V2 expands the tape from a SPY-path summary into deterministic replay evidence:
+full Alpha market snapshots/quotes, full 0DTE option-chain snapshots and contracts,
+features, predictions, candidates, decisions, orders, positions and matured outcomes.
+It also preserves Beta's own factor/forecast/witness stream so cross-model replay
+never has to reconstruct the independent witness from downstream decisions.
 """
 from __future__ import annotations
 
@@ -22,16 +23,12 @@ from zoneinfo import ZoneInfo
 ET = ZoneInfo("America/New_York")
 BETA_DB = Path("/var/lib/beta-spy/beta-spy.sqlite")
 ALPHA_DB = Path("/var/lib/alpha-spy/journal/alpha-spy.db")
-TAPE_SCHEMA_VERSION = 2
+TAPE_SCHEMA_VERSION = 3
 
 
 def session_bounds(day: str) -> tuple[str, str]:
     start = datetime.fromisoformat(day).replace(
-        tzinfo=ET,
-        hour=9,
-        minute=30,
-        second=0,
-        microsecond=0,
+        tzinfo=ET, hour=9, minute=30, second=0, microsecond=0
     )
     end = start.replace(hour=16, minute=0)
     return (
@@ -70,11 +67,43 @@ def dump_between(
     rows = [
         dict(row)
         for row in conn.execute(
-            f"SELECT * FROM {table} WHERE {ts_col} >= ? AND {ts_col} < ? "
-            f"ORDER BY {ts_col}",
+            f"SELECT * FROM {table} WHERE {ts_col} >= ? AND {ts_col} < ? ORDER BY {ts_col}",
             (start, end),
         )
     ]
+    return write_rows(rows, dest)
+
+
+def dump_child_by_parent_time(
+    conn: sqlite3.Connection,
+    *,
+    child: str,
+    parent: str,
+    join_col: str,
+    parent_ts_col: str,
+    dest: Path,
+    start: str,
+    end: str,
+) -> int:
+    conn.row_factory = sqlite3.Row
+    try:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                f"""
+                SELECT child.*
+                FROM {child} AS child
+                JOIN {parent} AS parent
+                  ON parent.{join_col}=child.{join_col}
+                WHERE parent.{parent_ts_col} >= ?
+                  AND parent.{parent_ts_col} < ?
+                ORDER BY parent.{parent_ts_col}, child.rowid
+                """,
+                (start, end),
+            )
+        ]
+    except sqlite3.OperationalError:
+        rows = []
     return write_rows(rows, dest)
 
 
@@ -93,28 +122,13 @@ def main() -> int:
         if BETA_DB.exists():
             beta = sqlite3.connect(f"file:{BETA_DB}?mode=ro", uri=True)
             counts["minute_bars"] = dump_between(
-                beta,
-                "minute_bars",
-                "timestamp",
-                out_dir / "minute_bars.csv",
-                start,
-                end,
+                beta, "minute_bars", "timestamp", out_dir / "minute_bars.csv", start, end
             )
             counts["spy_trades"] = dump_between(
-                beta,
-                "spy_trades",
-                "timestamp",
-                out_dir / "spy_trades.csv",
-                start,
-                end,
+                beta, "spy_trades", "timestamp", out_dir / "spy_trades.csv", start, end
             )
             counts["spy_quotes"] = dump_between(
-                beta,
-                "spy_quotes",
-                "timestamp",
-                out_dir / "spy_quotes.csv",
-                start,
-                end,
+                beta, "spy_quotes", "timestamp", out_dir / "spy_quotes.csv", start, end
             )
             counts["beta_factors"] = dump_between(
                 beta,
@@ -133,15 +147,8 @@ def main() -> int:
                 end,
             )
             counts["decisions"] = dump_between(
-                beta,
-                "decisions",
-                "timestamp",
-                out_dir / "decisions.json",
-                start,
-                end,
+                beta, "decisions", "timestamp", out_dir / "decisions.json", start, end
             )
-            # Explicit provenance alias for schema-v2 consumers.  Keep the old
-            # file name above so existing tape readers remain compatible.
             counts["beta_decisions"] = dump_between(
                 beta,
                 "decisions",
@@ -167,10 +174,13 @@ def main() -> int:
                 end,
             )
             beta.close()
+
         if ALPHA_DB.exists():
             alpha = sqlite3.connect(f"file:{ALPHA_DB}?mode=ro", uri=True)
             alpha.row_factory = sqlite3.Row
-            rows = [
+
+            # Keep the legacy lightweight path for backwards-compatible analysis.
+            path_rows = [
                 dict(row)
                 for row in alpha.execute(
                     """
@@ -184,17 +194,120 @@ def main() -> int:
                     (start, end),
                 )
             ]
-            counts["alpha_snapshots"] = write_rows(rows, out_dir / "alpha_spy_path.csv")
+            counts["alpha_snapshots"] = write_rows(
+                path_rows, out_dir / "alpha_spy_path.csv"
+            )
+
+            counts["alpha_market_snapshots"] = dump_between(
+                alpha,
+                "market_snapshots",
+                "captured_at",
+                out_dir / "alpha_market_snapshots.csv",
+                start,
+                end,
+            )
+            counts["alpha_snapshot_quotes"] = dump_child_by_parent_time(
+                alpha,
+                child="snapshot_quotes",
+                parent="market_snapshots",
+                join_col="snapshot_id",
+                parent_ts_col="captured_at",
+                dest=out_dir / "alpha_snapshot_quotes.csv",
+                start=start,
+                end=end,
+            )
+            counts["alpha_option_chain_snapshots"] = dump_between(
+                alpha,
+                "option_chain_snapshots",
+                "captured_at",
+                out_dir / "alpha_option_chain_snapshots.csv",
+                start,
+                end,
+            )
+            counts["alpha_option_quotes"] = dump_child_by_parent_time(
+                alpha,
+                child="option_quotes",
+                parent="option_chain_snapshots",
+                join_col="chain_snapshot_id",
+                parent_ts_col="captured_at",
+                dest=out_dir / "alpha_option_quotes.csv",
+                start=start,
+                end=end,
+            )
+            counts["alpha_surface_metrics"] = dump_between(
+                alpha,
+                "surface_metrics",
+                "created_at",
+                out_dir / "alpha_surface_metrics.csv",
+                start,
+                end,
+            )
+            counts["alpha_features"] = dump_between(
+                alpha, "features", "created_at", out_dir / "alpha_features.csv", start, end
+            )
+            counts["alpha_predictions"] = dump_between(
+                alpha,
+                "predictions",
+                "created_at",
+                out_dir / "alpha_predictions.csv",
+                start,
+                end,
+            )
+            counts["alpha_candidates"] = dump_between(
+                alpha,
+                "candidates",
+                "created_at",
+                out_dir / "alpha_candidates.csv",
+                start,
+                end,
+            )
+            counts["alpha_decisions"] = dump_between(
+                alpha,
+                "decisions",
+                "created_at",
+                out_dir / "alpha_decisions.csv",
+                start,
+                end,
+            )
+            counts["alpha_orders"] = dump_between(
+                alpha, "orders", "created_at", out_dir / "alpha_orders.csv", start, end
+            )
+            counts["alpha_positions"] = dump_between(
+                alpha,
+                "positions",
+                "opened_at",
+                out_dir / "alpha_positions.csv",
+                start,
+                end,
+            )
+            counts["alpha_prediction_outcomes"] = dump_between(
+                alpha,
+                "prediction_outcomes",
+                "confirmed_at",
+                out_dir / "alpha_prediction_outcomes.csv",
+                start,
+                end,
+            )
+            counts["alpha_candidate_outcomes"] = dump_between(
+                alpha,
+                "candidate_outcomes",
+                "confirmed_at",
+                out_dir / "alpha_candidate_outcomes.csv",
+                start,
+                end,
+            )
             alpha.close()
+
         (out_dir / "manifest.txt").write_text(
             "\n".join(
                 [
                     f"tape_schema_version={TAPE_SCHEMA_VERSION}",
-                    "tape_source=beta-spy",
+                    "tape_source=beta-spy-v2",
                     f"day={day}",
                     f"session_start_utc={start}",
                     f"session_end_utc={end}",
                     f"exported_at={datetime.now(ET).isoformat()}",
+                    "schema=v2_full_replay_evidence",
                     *[f"{key}={value}" for key, value in counts.items()],
                     "",
                 ]
