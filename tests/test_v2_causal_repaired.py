@@ -3,6 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 
 import numpy as np
+import pytest
 
 from beta_spy.v2_causal_repaired import (
     CausalHGBDirectionStack,
@@ -114,6 +115,3 @@ def test_mtf_exact_horizon_trains():
     )
     head.mature(start + timedelta(minutes=5), 100.1)
     assert head.sample_count == 1
-
-
-import pytest
