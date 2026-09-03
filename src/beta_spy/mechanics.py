@@ -54,6 +54,10 @@ class MechanicsEstimator:
     ``M_up = 1 / beta_up`` and ``M_down = 1 / beta_down`` when the fitted
     response has the expected sign and enough samples exist.
 
+    The estimator is explicitly intraday. A new UTC date resets the rolling
+    response state, and irregular timestamp gaps are never converted into a
+    fake one-minute response observation.
+
     The force model is deliberately small. It uses only tape/top-of-book
     quantities already available in Beta-spy and does not use future prices,
     option outcomes, or broker/execution information.
@@ -67,6 +71,7 @@ class MechanicsEstimator:
         ridge: float = 0.25,
         impulse_decay: float = 0.90,
         min_response: float = 1e-3,
+        regular_interval_tolerance: float = 0.50,
     ) -> None:
         if window < 10:
             raise ValueError("window must be >= 10")
@@ -74,15 +79,29 @@ class MechanicsEstimator:
             raise ValueError("min_samples must be between 8 and window")
         if not 0.0 <= impulse_decay < 1.0:
             raise ValueError("impulse_decay must be in [0, 1)")
+        if not 0.0 <= regular_interval_tolerance < 1.0:
+            raise ValueError("regular_interval_tolerance must be in [0, 1)")
         self.window = int(window)
         self.min_samples = int(min_samples)
         self.ridge = float(ridge)
         self.impulse_decay = float(impulse_decay)
         self.min_response = float(min_response)
+        self.regular_interval_tolerance = float(regular_interval_tolerance)
         self._rows: deque[tuple[float, float, float]] = deque(maxlen=self.window)
         self._last_log_price: float | None = None
         self._last_velocity: float | None = None
         self._last_force: float | None = None
+        self._last_timestamp: datetime | None = None
+        self._impulse = 0.0
+
+    def reset(self) -> None:
+        """Reset all intraday dynamics without changing configuration."""
+
+        self._rows.clear()
+        self._last_log_price = None
+        self._last_velocity = None
+        self._last_force = None
+        self._last_timestamp = None
         self._impulse = 0.0
 
     @staticmethod
@@ -107,6 +126,10 @@ class MechanicsEstimator:
     def step(self, timestamp: datetime, price: float, flow: FlowFeatures) -> MechanicsState:
         if price <= 0 or not math.isfinite(price):
             raise ValueError("price must be finite and positive")
+        if self._last_timestamp is not None and timestamp <= self._last_timestamp:
+            raise ValueError("timestamps must be strictly increasing")
+        if self._last_timestamp is not None and timestamp.date() != self._last_timestamp.date():
+            self.reset()
 
         log_price = math.log(price)
         force, force_ofi, force_quote, force_liquidity = self.force_from_flow(flow)
@@ -114,12 +137,21 @@ class MechanicsEstimator:
 
         velocity: float | None = None
         acceleration: float | None = None
+        dt_minutes: float | None = None
+        regular_interval = False
 
-        if self._last_log_price is not None:
-            velocity = (log_price - self._last_log_price) * 10_000.0
+        if self._last_timestamp is not None:
+            dt_minutes = (timestamp - self._last_timestamp).total_seconds() / 60.0
+            regular_interval = abs(dt_minutes - 1.0) <= self.regular_interval_tolerance
 
-        if velocity is not None and self._last_velocity is not None:
-            acceleration = velocity - self._last_velocity
+        if self._last_log_price is not None and dt_minutes is not None and dt_minutes > 0:
+            velocity = (log_price - self._last_log_price) * 10_000.0 / dt_minutes
+
+        # Acceleration is only defined for the fitted MVP on a regular minute
+        # step. A multi-minute gap is a missing-observation interval, not one
+        # enormous one-minute acceleration sample.
+        if regular_interval and velocity is not None and self._last_velocity is not None:
+            acceleration = (velocity - self._last_velocity) / max(dt_minutes or 1.0, 1e-9)
             if self._last_force is not None:
                 # F_{t-1} and v_{t-1} explain a_t. No t+1 observation enters.
                 self._rows.append((self._last_force, self._last_velocity, acceleration))
@@ -167,6 +199,7 @@ class MechanicsEstimator:
         if velocity is not None:
             self._last_velocity = velocity
         self._last_force = force
+        self._last_timestamp = timestamp
         return state
 
     def _fit_responses(self) -> tuple[float | None, float | None]:
