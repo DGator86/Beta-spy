@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import math
 
 import numpy as np
+import pytest
 
 from beta_spy.mechanics import MechanicsEstimator
 from beta_spy.models import FlowFeatures
@@ -114,3 +115,49 @@ def test_future_path_cannot_change_prefix_state() -> None:
 
     # The previously produced state is immutable and identical.
     assert state_left == state_right
+
+
+def test_irregular_gap_does_not_create_fake_response_row() -> None:
+    estimator = MechanicsEstimator(window=20, min_samples=8)
+    stamp = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
+    price = 600.0
+
+    estimator.step(stamp, price, _flow(0.5))
+    price *= math.exp(0.5 / 10_000.0)
+    estimator.step(stamp + timedelta(minutes=1), price, _flow(-0.4))
+    price *= math.exp(-0.2 / 10_000.0)
+    before_gap = estimator.step(stamp + timedelta(minutes=2), price, _flow(0.3))
+    assert before_gap.sample_count == 1
+
+    price *= math.exp(1.0 / 10_000.0)
+    gap_state = estimator.step(stamp + timedelta(minutes=7), price, _flow(0.2))
+    assert gap_state.sample_count == before_gap.sample_count
+    assert gap_state.acceleration_bps is None
+
+    price *= math.exp(0.2 / 10_000.0)
+    after_gap = estimator.step(stamp + timedelta(minutes=8), price, _flow(-0.1))
+    assert after_gap.sample_count == before_gap.sample_count + 1
+
+
+def test_new_session_resets_rolling_response_state() -> None:
+    estimator = MechanicsEstimator(window=20, min_samples=8)
+    stamp = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
+    price = 600.0
+
+    for i in range(12):
+        price *= math.exp((0.2 if i % 2 == 0 else -0.1) / 10_000.0)
+        state = estimator.step(stamp + timedelta(minutes=i), price, _flow(0.5 if i % 2 == 0 else -0.4))
+    assert state.sample_count > 0
+
+    next_day = estimator.step(stamp + timedelta(days=1), price, _flow(0.2))
+    assert next_day.sample_count == 0
+    assert next_day.velocity_bps is None
+    assert next_day.acceleration_bps is None
+
+
+def test_timestamps_must_increase() -> None:
+    estimator = MechanicsEstimator(window=20, min_samples=8)
+    stamp = datetime(2026, 1, 5, 14, 30, tzinfo=UTC)
+    estimator.step(stamp, 600.0, _flow(0.1))
+    with pytest.raises(ValueError, match="strictly increasing"):
+        estimator.step(stamp, 600.1, _flow(0.1))
