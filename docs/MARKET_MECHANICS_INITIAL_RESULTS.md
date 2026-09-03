@@ -34,13 +34,15 @@ raw SPY quotes: 72,556
 The raw SPY trade tape in this snapshot is concentrated on 2026-08-17, so the first genuine force test
 has only one complete-enough RTH tape session.
 
-For 2026-08-17 regular trading hours the usable joined substrate contained:
+For 2026-08-17 regular trading hours the available raw tape contained:
 
 ```text
-SPY price/flow minutes: 376
-raw RTH SPY trades: 206,304
+raw RTH SPY trades: 206,548
 raw RTH SPY quotes: 54,930
 ```
+
+After requiring a contemporaneous SPY minute-price observation, 376 price/flow minutes were usable for
+the strict mechanics test. Missing price minutes are treated as missing observations, not synthesized.
 
 There are missing one-minute price observations inside the session. The research implementation was
 therefore hardened to skip response fitting across irregular gaps and to create future labels using an
@@ -57,7 +59,7 @@ The frozen MVP force remains:
 F = 0.60 * OFI + 0.25 * quote imbalance + 0.15 * liquidity-support asymmetry
 ```
 
-Observed 2026-08-17 RTH distribution:
+Observed usable 2026-08-17 RTH distribution:
 
 | Component | Mean | Std. dev. | Min | Max |
 |---|---:|---:|---:|---:|
