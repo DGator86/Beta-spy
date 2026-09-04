@@ -53,11 +53,15 @@ class MechanicsV2State:
     braking_inertia_up: float | None
     braking_inertia_down: float | None
     launch_inertia_down: float | None
+    active_launch_inertia: float | None
+    active_braking_inertia: float | None
+    brake_launch_ratio: float | None
     pp_samples: int
     pm_samples: int
     mp_samples: int
     mm_samples: int
     braking_ready: bool
+    active_braking_ready: bool
     full_quadrant_ready: bool
 
 
@@ -78,6 +82,9 @@ class MechanicsV2Estimator:
         M_brake_up    = 1 / beta_pm
         M_brake_down  = 1 / beta_mp
         M_launch_down = 1 / beta_mm
+
+    ``active_braking_inertia`` selects the braking inertia opposing the current
+    direction of motion. That is the primary V2 trend-persistence variable.
 
     This module is research-only and has no execution authority.
     """
@@ -157,6 +164,20 @@ class MechanicsV2Estimator:
 
         fits = self._fit_quadrants()
 
+        active_launch: float | None = None
+        active_brake: float | None = None
+        if velocity is not None:
+            if velocity >= 0.0:
+                active_launch = fits["pp"].inertia
+                active_brake = fits["pm"].inertia
+            else:
+                active_launch = fits["mm"].inertia
+                active_brake = fits["mp"].inertia
+
+        brake_launch_ratio = None
+        if active_launch is not None and active_brake is not None and active_launch > 0.0:
+            brake_launch_ratio = active_brake / active_launch
+
         state = MechanicsV2State(
             timestamp=timestamp,
             log_price=log_price,
@@ -174,11 +195,15 @@ class MechanicsV2Estimator:
             braking_inertia_up=fits["pm"].inertia,
             braking_inertia_down=fits["mp"].inertia,
             launch_inertia_down=fits["mm"].inertia,
+            active_launch_inertia=active_launch,
+            active_braking_inertia=active_brake,
+            brake_launch_ratio=brake_launch_ratio,
             pp_samples=fits["pp"].samples,
             pm_samples=fits["pm"].samples,
             mp_samples=fits["mp"].samples,
             mm_samples=fits["mm"].samples,
             braking_ready=fits["pm"].inertia is not None and fits["mp"].inertia is not None,
+            active_braking_ready=active_brake is not None,
             full_quadrant_ready=all(fit.inertia is not None for fit in fits.values()),
         )
 
