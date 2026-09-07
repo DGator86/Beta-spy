@@ -27,7 +27,11 @@ jobs:
       - name: Validate SPY Command assets
         shell: bash
         run: |
-          python -m py_compile scripts/spy-overview-status.py scripts/spy-overview-delta.py
+          python -m py_compile \
+            scripts/spy-overview-status.py \
+            scripts/spy-overview-delta.py \
+            scripts/spy-overview-delta-v2.py
+          bash -n scripts/deploy-spy-overview.sh scripts/spy-tunnel-url.sh
           python - <<'PY'
           from pathlib import Path
           import re
@@ -42,7 +46,15 @@ jobs:
           missing = [item for item in required if f'id="{item}"' not in html]
           if missing:
               raise SystemExit(f'missing dashboard IDs: {missing}')
+
+          nginx = Path('config/nginx-spy.conf').read_text(encoding='utf-8')
+          required_nginx = ['location ^~ /chatgpt/', 'auth_basic off', 'try_files $uri =404']
+          missing_nginx = [item for item in required_nginx if item not in nginx]
+          if missing_nginx:
+              raise SystemExit(f'missing ChatGPT nginx protections: {missing_nginx}')
           PY
           node --check /tmp/spy-command.js
+      - name: Delta tests
+        run: pytest -q tests/test_spy_overview_delta.py tests/test_spy_overview_delta_v2.py
       - name: Tests
         run: pytest
