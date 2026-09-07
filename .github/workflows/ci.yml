@@ -27,7 +27,7 @@ jobs:
       - name: Validate SPY Command assets
         shell: bash
         run: |
-          python -m py_compile scripts/spy-overview-status.py
+          python -m py_compile scripts/spy-overview-status.py scripts/spy-overview-delta.py
           python - <<'PY'
           from pathlib import Path
           import re
