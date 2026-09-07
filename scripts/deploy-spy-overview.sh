@@ -10,6 +10,7 @@ WEB_ROOT="${SPY_OVERVIEW_WEB_ROOT:-/var/www/spy-overview}"
 STATUS_BIN="${SPY_OVERVIEW_STATUS_BIN:-/usr/local/sbin/spy-overview-status}"
 BASE_BIN="${SPY_OVERVIEW_BASE_BIN:-/usr/local/lib/spy-overview-base.py}"
 DELTA_V1_BIN="${SPY_OVERVIEW_DELTA_V1_BIN:-/usr/local/lib/spy-overview-delta-v1.py}"
+DELTA_V2_BIN="${SPY_OVERVIEW_DELTA_V2_BIN:-/usr/local/lib/spy-overview-delta-v2.py}"
 ENV_FILE="${SPY_OVERVIEW_ENV_FILE:-/etc/spy-overview.env}"
 SLUG_FILE="${SPY_OVERVIEW_CHATGPT_SLUG_FILE:-/etc/spy-overview-chatgpt-slug}"
 TUNNEL_URL_BIN="${SPY_TUNNEL_URL_BIN:-/usr/local/sbin/spy-tunnel-url}"
@@ -62,15 +63,17 @@ path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 path.chmod(0o600)
 PY
 
-# Keep each layer separate so rollback is trivial.  The old overview collector
-# remains the base, Delta v1 remains available for compatibility, and the
-# horizon-aware v2 wrapper is the executable publisher.
+# Keep each layer separate so rollback is trivial. The original collector stays
+# the base; v1 is the compatibility convergence core; v2 adds horizon-specific
+# constituent pressure; the final live launcher enforces options-tenor rules and
+# publishes a compact row for every scanned constituent.
 install -m 0644 "$ROOT/scripts/spy-overview-status.py" "$BASE_BIN"
 install -m 0644 "$ROOT/scripts/spy-overview-delta.py" "$DELTA_V1_BIN"
-install -m 0755 "$ROOT/scripts/spy-overview-delta-v2.py" "$STATUS_BIN"
+install -m 0644 "$ROOT/scripts/spy-overview-delta-v2.py" "$DELTA_V2_BIN"
+install -m 0755 "$ROOT/scripts/spy-overview-live.py" "$STATUS_BIN"
 install -m 0755 "$ROOT/scripts/spy-tunnel-url.sh" "$TUNNEL_URL_BIN"
 
-python3 -m py_compile "$BASE_BIN" "$DELTA_V1_BIN" "$STATUS_BIN"
+python3 -m py_compile "$BASE_BIN" "$DELTA_V1_BIN" "$DELTA_V2_BIN" "$STATUS_BIN"
 
 for unit_file in \
   spy-overview-status.service \
@@ -84,8 +87,8 @@ do
 done
 
 # If this machine already has the source-controlled SPY nginx config installed,
-# update only that discovered file.  Do not invent a second server block on an
-# unfamiliar host.  A failed nginx validation is rolled back before exiting.
+# update only that discovered file. Do not invent a second server block on an
+# unfamiliar host. A failed nginx validation is rolled back before exiting.
 NGINX_UPDATED=0
 if command -v nginx >/dev/null 2>&1; then
   NGINX_TARGET="${SPY_NGINX_CONFIG_TARGET:-}"
