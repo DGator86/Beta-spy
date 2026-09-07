@@ -30,7 +30,8 @@ jobs:
           python -m py_compile \
             scripts/spy-overview-status.py \
             scripts/spy-overview-delta.py \
-            scripts/spy-overview-delta-v2.py
+            scripts/spy-overview-delta-v2.py \
+            scripts/spy-overview-live.py
           bash -n scripts/deploy-spy-overview.sh scripts/spy-tunnel-url.sh
           python - <<'PY'
           from pathlib import Path
@@ -55,6 +56,6 @@ jobs:
           PY
           node --check /tmp/spy-command.js
       - name: Delta tests
-        run: pytest -q tests/test_spy_overview_delta.py tests/test_spy_overview_delta_v2.py
+        run: pytest -q tests/test_spy_overview_delta.py tests/test_spy_overview_delta_v2.py tests/test_spy_overview_live.py
       - name: Tests
         run: pytest
