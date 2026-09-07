@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-09-08T12:00:00Z",
+  "events": [
+    {
+      "symbol": "MU",
+      "published_at": "2026-09-08T11:55:00Z",
+      "direction": "BULLISH",
+      "strength": 0.90,
+      "materiality": 0.88,
+      "novelty": 0.92,
+      "confidence": 0.84,
+      "catalyst_type": "PEER",
+      "headline": "Example only: peer read-through implies stronger memory demand",
+      "source": "example",
+      "url": null,
+      "expected_horizon_minutes": 120,
+      "reference_price": 100.0,
+      "half_life_minutes": 180
+    }
+  ]
+}
