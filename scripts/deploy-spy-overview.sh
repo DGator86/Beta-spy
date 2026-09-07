@@ -12,6 +12,7 @@ BASE_BIN="${SPY_OVERVIEW_BASE_BIN:-/usr/local/lib/spy-overview-base.py}"
 DELTA_V1_BIN="${SPY_OVERVIEW_DELTA_V1_BIN:-/usr/local/lib/spy-overview-delta-v1.py}"
 ENV_FILE="${SPY_OVERVIEW_ENV_FILE:-/etc/spy-overview.env}"
 SLUG_FILE="${SPY_OVERVIEW_CHATGPT_SLUG_FILE:-/etc/spy-overview-chatgpt-slug}"
+TUNNEL_URL_BIN="${SPY_TUNNEL_URL_BIN:-/usr/local/sbin/spy-tunnel-url}"
 
 if [[ ${EUID:-$(id -u)} -ne 0 ]]; then
   echo "deploy-spy-overview.sh must run as root" >&2
@@ -67,15 +68,20 @@ PY
 install -m 0644 "$ROOT/scripts/spy-overview-status.py" "$BASE_BIN"
 install -m 0644 "$ROOT/scripts/spy-overview-delta.py" "$DELTA_V1_BIN"
 install -m 0755 "$ROOT/scripts/spy-overview-delta-v2.py" "$STATUS_BIN"
+install -m 0755 "$ROOT/scripts/spy-tunnel-url.sh" "$TUNNEL_URL_BIN"
 
 python3 -m py_compile "$BASE_BIN" "$DELTA_V1_BIN" "$STATUS_BIN"
 
-if [[ -f "$ROOT/systemd/spy-overview-status.service" ]]; then
-  install -m 0644 "$ROOT/systemd/spy-overview-status.service" /etc/systemd/system/spy-overview-status.service
-fi
-if [[ -f "$ROOT/systemd/spy-overview-status.timer" ]]; then
-  install -m 0644 "$ROOT/systemd/spy-overview-status.timer" /etc/systemd/system/spy-overview-status.timer
-fi
+for unit_file in \
+  spy-overview-status.service \
+  spy-overview-status.timer \
+  spy-tunnel-url.service \
+  spy-tunnel-url.timer
+do
+  if [[ -f "$ROOT/systemd/$unit_file" ]]; then
+    install -m 0644 "$ROOT/systemd/$unit_file" "/etc/systemd/system/$unit_file"
+  fi
+done
 
 # If this machine already has the source-controlled SPY nginx config installed,
 # update only that discovered file.  Do not invent a second server block on an
@@ -117,6 +123,7 @@ fi
 
 systemctl daemon-reload
 systemctl enable --now spy-overview-status.timer
+systemctl enable --now spy-tunnel-url.timer
 systemctl start spy-overview-status.service
 
 # Produce the document now rather than waiting for the next minute boundary.
@@ -125,6 +132,11 @@ if [[ ! -s "$CHATGPT_PATH" ]]; then
   exit 1
 fi
 
+# Publish the current tunnel + random ChatGPT path to the existing Drive backup
+# folder. This is best-effort because a tunnel can be temporarily reconnecting;
+# the timer will retry it automatically.
+systemctl start spy-tunnel-url.service || true
+
 printf 'SPY Command / Delta overview deployed\n'
 printf '  UI:       %s/index.html\n' "$WEB_ROOT"
 printf '  status:   %s/status.json\n' "$WEB_ROOT"
@@ -132,3 +144,4 @@ printf '  ChatGPT:  %s\n' "$CHATGPT_PATH"
 printf '  Gamma:    %s (optional)\n' "${GAMMA_CATALYSTS_PATH:-/var/lib/spy-overview/gamma-catalysts.json}"
 printf '  nginx:    %s\n' "$([[ $NGINX_UPDATED -eq 1 ]] && echo updated || echo unchanged)"
 printf '  timer:    %s\n' "$(systemctl is-active spy-overview-status.timer || true)"
+printf '  URL sync: %s\n' "$(systemctl is-active spy-tunnel-url.timer || true)"
